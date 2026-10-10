@@ -404,6 +404,18 @@ private fun LunexApp() {
                             Text(activeDm?.displayName ?: "# $activeChannelName", fontWeight = FontWeight.Bold)
                             Text(if (activeDm != null) "@${activeDm!!.username}" else "История загружается с сервера", color = Muted, fontSize = 11.sp)
                         }
+                        if (activeDm != null) {
+                            IconButton(onClick = {
+                                val chat = activeDm
+                                if (chat == null || chat.userId.isBlank()) notice = "Не удалось определить пользователя для звонка."
+                                else { callMode = "audio"; withCallPermissions { callManager.startOutgoing(chat.id, chat.userId, "audio") } }
+                            }) { Icon(Icons.Default.Call, "Голосовой звонок", tint = Purple) }
+                            IconButton(onClick = {
+                                val chat = activeDm
+                                if (chat == null || chat.userId.isBlank()) notice = "Не удалось определить пользователя для звонка."
+                                else { callMode = "video"; withCallPermissions { callManager.startOutgoing(chat.id, chat.userId, "video") } }
+                            }) { Icon(Icons.Default.Videocam, "Видеозвонок", tint = Purple) }
+                        }
                     }
                     LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(messages, key = { it.id }) { msg ->
@@ -432,6 +444,55 @@ private fun LunexApp() {
                     }
                 }
             }
+            if (token.isNotBlank() && callState !in setOf("idle", "ended", "rejected", "failed")) {
+                val isIncoming = incomingCall != null
+                AlertDialog(
+                    onDismissRequest = {},
+                    title = { Text(if (isIncoming) "Входящий ${if (callMode == "video") "видеозвонок" else "звонок"}" else if (callMode == "video") "Видеозвонок" else "Голосовой звонок") },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(incomingCall?.optJSONObject("caller")?.optString("displayName").orEmpty().ifBlank { activeDm?.displayName ?: "Собеседник" }, color = Muted)
+                            Text(when (callState) { "calling" -> "Вызов…"; "incoming" -> "Входящий вызов"; "connecting" -> "Подключаемся…"; "connected" -> "Соединение установлено"; else -> "Подготовка звонка…" })
+                            if (callMode == "video") {
+                                localVideoTrack?.let { Text("Твоё видео", fontWeight = FontWeight.SemiBold); CallVideoPreview(it, callManager, true) }
+                                remoteVideoTrack?.let { Text("Видео собеседника", fontWeight = FontWeight.SemiBold); CallVideoPreview(it, callManager, false) }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (isIncoming) {
+                                TextButton(onClick = { withCallPermissions { callManager.acceptIncoming() } }) { Text("Принять") }
+                                TextButton(onClick = { callManager.rejectIncoming() }) { Text("Отклонить", color = Color(0xFFFF7188)) }
+                            } else {
+                                if (callState == "connected") {
+                                    TextButton(onClick = { micEnabled = !micEnabled; callManager.setMicrophoneEnabled(micEnabled) }) { Icon(if (micEnabled) Icons.Default.Mic else Icons.Default.MicOff, null); Text("Микрофон") }
+                                    if (callMode == "video") TextButton(onClick = { cameraEnabled = !cameraEnabled; callManager.setCameraEnabled(cameraEnabled) }) { Icon(if (cameraEnabled) Icons.Default.Videocam else Icons.Default.VideocamOff, null); Text("Камера") }
+                                }
+                                TextButton(onClick = { callManager.endCall() }) { Icon(Icons.Default.CallEnd, null, tint = Color(0xFFFF7188)); Text("Завершить", color = Color(0xFFFF7188)) }
+                            }
+                        }
+                    }
+                )
+            }
         }
     }
+}
+
+@Composable
+private fun CallVideoPreview(track: VideoTrack, manager: AndroidCallManager, mirror: Boolean) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val renderer = remember(manager) {
+        SurfaceViewRenderer(context).apply {
+            init(manager.eglContext, null)
+            setEnableHardwareScaler(true)
+            setMirror(mirror)
+        }
+    }
+    DisposableEffect(renderer, track) {
+        track.addSink(renderer)
+        onDispose { track.removeSink(renderer) }
+    }
+    DisposableEffect(renderer) { onDispose { renderer.release() } }
+    AndroidView(factory = { renderer }, modifier = Modifier.fillMaxWidth().height(180.dp))
 }
