@@ -19,6 +19,7 @@ const DEFAULT_THEME = {
 
 function App() {
   const [user, setUser] = useState('');
+  const [socketConnected, setSocketConnected] = useState(socket.connected);
   const [userId, setUserId] = useState('');
   const [token, setToken] = useState(() => localStorage.getItem('lunex-token') || '');
   const [authMode, setAuthMode] = useState('login');
@@ -69,6 +70,14 @@ function App() {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const remoteAudioRef = useRef(null);
+
+  useEffect(() => {
+    const onConnect = () => setSocketConnected(true);
+    const onDisconnect = () => setSocketConnected(false);
+    socket.on('connect', onConnect); socket.on('disconnect', onDisconnect);
+    setSocketConnected(socket.connected);
+    return () => { socket.off('connect', onConnect); socket.off('disconnect', onDisconnect); };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -291,7 +300,7 @@ function App() {
     </aside>
 
     <aside className={`sidebar ${mobileNav ? 'show' : ''}`}>
-      <header className="sidebar-header"><div><div className="brand">LUNEX <span className="online-dot"/></div><div className="muted tiny">Твоё цифровое пространство</div></div><button className="icon-btn" onClick={()=>setNewCommunity(true)} title="Создать сообщество"><Plus/></button></header>
+      <header className="sidebar-header"><div><div className="brand">LUNEX <span className={`online-dot ${socketConnected?'connected':'offline'}`} title={socketConnected?'Соединение с сервером активно':'Нет соединения с сервером'}/></div><div className="muted tiny">Твоё цифровое пространство</div></div><button className="icon-btn" onClick={()=>setNewCommunity(true)} title="Создать сообщество"><Plus/></button></header>
       <div className="search-box"><Search size={16}/><input value={chatSearch} onChange={e=>setChatSearch(e.target.value)} placeholder="Поиск чатов и каналов"/></div>
       {tab === 'chats' && <>
         <div className="section-heading"><span>ЛИЧНЫЕ ЧАТЫ</span><button className="tiny-icon" title="Новый личный чат" onClick={()=>setNewDm(true)}><Plus size={15}/></button></div>
