@@ -80,13 +80,11 @@ function App() {
       const msg = event?.message;
       if (!msg || msg.userId === userId) return;
       setDms(prev => prev.map(c => c.id === event.conversationId ? { ...c, lastMessage: msg.text, time: msg.time } : c));
-      if (event.conversationId !== dm?.id || tab !== 'chats') {
-        setNotifications(prev => [{ id: msg.id, type: 'dm', conversationId: event.conversationId, user: msg.user, text: msg.text || (msg.attachment ? '📎 ' + msg.attachment.name : ''), time: msg.time, read: false }, ...prev.filter(n => n.id !== msg.id)].slice(0,50));
-      }
+      setNotifications(prev => [{ id: msg.id, type: 'dm', conversationId: event.conversationId, user: msg.user, text: msg.text || (msg.attachment ? '📎 ' + msg.attachment.name : ''), time: msg.time, read: false }, ...prev.filter(n => n.id !== msg.id)].slice(0,50));
     };
     socket.on('dm:new', onDmNew);
     return () => socket.off('dm:new', onDmNew);
-  }, [userId, dm?.id, tab]);
+  }, [userId]);
 
   useEffect(() => {
     const onConnect = () => setSocketConnected(true);
