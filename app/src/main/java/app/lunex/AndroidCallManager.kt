@@ -2,6 +2,8 @@ package app.lunex
 
 import android.content.Context
 import android.media.AudioManager
+import android.os.Handler
+import android.os.Looper
 import org.json.JSONObject
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
@@ -62,6 +64,9 @@ internal class AndroidCallManager(
     private var disposed = false
     private var micEnabled = true
     private var cameraEnabled = true
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var callTimeout: Runnable? = null
+    private var connectionEstablished = false
 
     val eglContext get() = egl.eglBaseContext
 
@@ -100,6 +105,8 @@ internal class AndroidCallManager(
             pendingOffer = event.optJSONObject("offer")
             currentMode = event.optString("mode", "audio")
             isCaller = false
+            connectionEstablished = false
+            scheduleTimeout("Не удалось дозвониться: нет ответа.")
             onState("incoming")
             onIncoming(event)
         }
@@ -146,7 +153,9 @@ internal class AndroidCallManager(
         currentMode = mode
         isCaller = true
         localSignalReady = false
+        connectionEstablished = false
         onState("calling")
+        scheduleTimeout("Не удалось дозвониться. Проверь сеть или TURN-сервер.")
         try {
             prepareMedia(mode)
             createPeer()
@@ -283,7 +292,7 @@ internal class AndroidCallManager(
             override fun onSignalingChange(state: PeerConnection.SignalingState) {}
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
                 when (state) {
-                    PeerConnection.IceConnectionState.CONNECTED, PeerConnection.IceConnectionState.COMPLETED -> onState("connected")
+                    PeerConnection.IceConnectionState.CONNECTED, PeerConnection.IceConnectionState.COMPLETED -> { connectionEstablished = true; cancelTimeout(); onState("connected") }
                     PeerConnection.IceConnectionState.FAILED -> fail("Не удалось соединить устройства. Для некоторых сетей нужен TURN-сервер.")
                     else -> {}
                 }
@@ -325,6 +334,18 @@ internal class AndroidCallManager(
         pendingRemoteCandidates.clear()
     }
 
+    private fun scheduleTimeout(message: String) {
+        cancelTimeout()
+        val expectedCallId = currentCallId
+        callTimeout = Runnable { if (currentCallId == expectedCallId && !connectionEstablished) { socket?.emit("call:end", JSONObject().put("callId", expectedCallId).put("conversationId", currentConversationId)); fail(message) } }
+        mainHandler.postDelayed(callTimeout!!, 35000)
+    }
+
+    private fun cancelTimeout() {
+        callTimeout?.let(mainHandler::removeCallbacks)
+        callTimeout = null
+    }
+
     private fun fail(message: String) {
         closeInternal()
         onState("failed")
@@ -332,6 +353,8 @@ internal class AndroidCallManager(
     }
 
     private fun closeInternal() {
+        cancelTimeout()
+        connectionEstablished = false
         runCatching { capturer?.stopCapture() }
         runCatching { capturer?.dispose() }
         capturer = null
