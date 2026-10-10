@@ -175,10 +175,13 @@ function hasPermission(community, userId, permission, channel = null) {
 function publicCommunity(community, userId) {
   const member = communityMembership(community, userId);
   return {
-    ...community,
+    id: community.id, name: community.name, description: community.description || '',
+    ownerId: community.ownerId || null, createdAt: community.createdAt || null,
+    memberCount: community.ownerId ? (community.members || []).length : null,
+    roles: (community.roles || []).map(role => ({ id: role.id, name: role.name, permissions: role.id === 'owner' ? [] : role.permissions })),
     isMember: !community.ownerId || Boolean(member),
     myRole: member?.roleId || (!community.ownerId ? 'member' : null),
-    channels: (community.channels || []).filter(channel => hasPermission(community, userId, 'view', channel))
+    channels: (community.channels || []).filter(channel => hasPermission(community, userId, 'view', channel)).map(channel => ({ id: channel.id, name: channel.name, type: channel.type, private: Boolean(channel.private) }))
   };
 }
 function canManageCommunity(community, userId) {
@@ -234,7 +237,7 @@ app.patch('/api/communities/:id/members/:userId', authHttp, (req, res) => {
   const role = (community.roles || []).find(item => item.id === req.body?.roleId && item.id !== 'owner');
   if (!role) return res.status(400).json({ error: 'Укажи существующую роль.' });
   const actor = communityMembership(community, req.user.id);
-  if (actor?.roleId !== 'owner' && (role.permissions || []).includes('*')) return res.status(403).json({ error: 'Администратор не может назначить роль владельца.' });
+  if (actor?.roleId !== 'owner' && role.id !== 'member') return res.status(403).json({ error: 'Назначать административные роли может только владелец.' });
   member.roleId = role.id; saveDb();
   res.json({ userId: member.userId, roleId: member.roleId });
 });
@@ -269,7 +272,7 @@ app.patch('/api/communities/:id/roles/:roleId', authHttp, (req, res) => {
   role.permissions = permissions.filter(value => value !== '*');
   saveDb();
   res.json(role);
-}));
+});
 app.get('/api/dms', authHttp, (req, res) => res.json(db.dms.filter(d => d.userIds.includes(req.user.id)).map(d => dmSummary(d, req.user.id))));
 app.post('/api/dms', authHttp, (req, res) => {
   const username = cleanUsername(req.body?.username).replace(/^@/, '');
