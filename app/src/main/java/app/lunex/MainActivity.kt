@@ -465,7 +465,7 @@ private fun LunexApp() {
                     confirmButton = {
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             if (isIncoming) {
-                                TextButton(onClick = { withCallPermissions { callManager.acceptIncoming() } }) { Text("Принять") }
+                                TextButton(onClick = { withCallPermissions { incomingCall = null; callState = "connecting"; callManager.acceptIncoming() } }) { Text("Принять") }
                                 TextButton(onClick = { callManager.rejectIncoming() }) { Text("Отклонить", color = Color(0xFFFF7188)) }
                             } else {
                                 if (callState == "connected") {
