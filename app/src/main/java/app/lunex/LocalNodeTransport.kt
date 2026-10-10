@@ -205,7 +205,7 @@ internal class LocalNodeTransport(
                             if (inserted) {
                                 main.post { onMessage(message) }
                                 val sourceAddress = client.inetAddress
-                                io.execute { relayToPeers(message, token, sourceAddress) }
+                                io.execute { relayToPeers(message, sourceAddress) }
                             }
                             JSONObject().put("ok", true).put("ack", message.id)
                         }
