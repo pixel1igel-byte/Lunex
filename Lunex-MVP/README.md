@@ -4,12 +4,12 @@ Lunex is an early-stage web messenger with account registration, password hashin
 
 ## Voice and video calling
 
-The web client now includes one-to-one WebRTC call controls in direct messages. The server authenticates call signaling and checks that both participants belong to the relevant direct conversation. Media is exchanged peer-to-peer when network conditions allow.
+The web client and native Android client now include one-to-one WebRTC call controls in direct messages. The server authenticates call signaling and checks that both participants belong to the relevant direct conversation. Media is exchanged peer-to-peer when network conditions allow. The browser client has an automated two-peer test that completes audio and video calls and verifies live remote audio/video tracks. The Android APK has a successful CI build, but a real call between two Android devices has not yet been verified.
 
 - The web app must be served over HTTPS (or localhost during development) for browser camera/microphone access.
 - The default ICE configuration includes a public STUN server. Some networks require a TURN relay. To enable one, configure `LUNEX_TURN_URLS` (comma-separated `turn:`/`turns:` URLs) and `LUNEX_TURN_SECRET` on the server. Lunex then issues short-lived TURN credentials using the TURN REST shared-secret mechanism; the TURN service itself must be operated/configured separately.
 - This implementation has not yet been verified in a live call between two separate devices.
-- The native Android client is not yet wired to this WebRTC call flow.
+- Native Android calls require runtime microphone permission and camera permission for video. Device-to-device runtime verification is still outstanding.
 
 ## Security status
 
