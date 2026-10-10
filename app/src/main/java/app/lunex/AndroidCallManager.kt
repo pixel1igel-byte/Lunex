@@ -32,8 +32,6 @@ import java.util.concurrent.CopyOnWriteArrayList
  */
 internal class AndroidCallManager(
     private val context: Context,
-    private val server: String,
-    private val token: String,
     private val iceServers: List<PeerConnection.IceServer>,
     private val onIncoming: (JSONObject) -> Unit,
     private val onState: (String) -> Unit,
