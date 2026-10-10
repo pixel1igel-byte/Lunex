@@ -337,7 +337,7 @@ internal class AndroidCallManager(
     private fun scheduleTimeout(message: String) {
         cancelTimeout()
         val expectedCallId = currentCallId
-        callTimeout = Runnable { if (currentCallId == expectedCallId && !connectionEstablished) { socket?.emit("call:end", JSONObject().put("callId", expectedCallId).put("conversationId", currentConversationId)); fail(message) } }
+        callTimeout = Runnable { if (currentCallId == expectedCallId && !connectionEstablished) fail(message) }
         mainHandler.postDelayed(callTimeout!!, 35000)
     }
 
