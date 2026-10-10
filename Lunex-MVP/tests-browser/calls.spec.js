@@ -43,6 +43,8 @@ test('two real browser peers complete audio and video WebRTC calls', async ({ br
     await acceptCall(bob);
     await Promise.all([expectConnected(alice), expectConnected(bob)]);
     await expect(alice.locator('audio')).toHaveCount(1);
+    await expect.poll(() => alice.locator('audio').evaluate(el => Boolean(el.srcObject?.getAudioTracks().some(track => track.readyState === 'live'))), { timeout: 15000 }).toBe(true);
+    await expect.poll(() => bob.locator('audio').evaluate(el => Boolean(el.srcObject?.getAudioTracks().some(track => track.readyState === 'live'))), { timeout: 15000 }).toBe(true);
     await alice.getByRole('button', { name: 'Завершить' }).click();
     await expect(alice.locator('.call-card')).toHaveCount(0);
     await expect(bob.locator('.call-card')).toHaveCount(0);
