@@ -218,6 +218,12 @@ internal class LocalNodeTransport(
             socket.soTimeout = 10000
             val line = readBoundedLine(BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8)), MAX_REQUEST_FRAME_CHARS) ?: return
             val wireRequest = JSONObject(line)
+            if (!wireRequest.optBoolean("encrypted") &&
+                (wireRequest.optString("token").isNotBlank() || wireRequest.optString("authToken").isNotBlank())) {
+                PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true)
+                    .println(JSONObject().put("ok", false).put("error", "Room-authenticated frames must be encrypted").toString())
+                return
+            }
             var responseToken: String? = null
             val request = if (wireRequest.optBoolean("encrypted")) {
                 val keyId = wireRequest.optString("keyId")
