@@ -1,0 +1,26 @@
+name: Test Lunex web client
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'Lunex-MVP/**'
+      - '.github/workflows/test-web.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Lunex-MVP
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: Lunex-MVP/package.json
+      - run: npm install --no-audit --no-fund
+      - run: npm test
+      - run: npm run build
