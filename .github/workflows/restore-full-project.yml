@@ -1,0 +1,54 @@
+name: Restore full Lunex project
+on:
+  push:
+    paths:
+      - ".github/workflows/restore-full-project.yml"
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Restore original project sources from repository history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show 6a9ab9315ea9dc7963eb3a21ab6b153a1af6fb2c:Lunex-Full-Project-All-History.zip > /tmp/lunex-history.zip
+          mkdir -p /tmp/lunex-unpacked
+          unzip -q /tmp/lunex-history.zip -d /tmp/lunex-unpacked
+          SRC=/tmp/lunex-unpacked/Lunex-Complete
+          test -f "$SRC/Lunex-MVP/server/index.js"
+          test -f "$SRC/Lunex-MVP/src/main.jsx"
+          test -f "$SRC/Lunex-Android/app/src/main/java/app/lunex/MainActivity.kt"
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          cp -a "$SRC/Lunex-Android/." .
+          mkdir -p Lunex-MVP
+          cp -a "$SRC/Lunex-MVP/." Lunex-MVP/
+          mkdir -p branding history/previous-releases
+          cp -a "$SRC/branding/." branding/
+          cp "$SRC/PROJECT-HISTORY-RU.md" .
+          cp "$SRC/README-RU.md" .
+          cp -a "$SRC/history/previous-releases/." history/previous-releases/
+          find . -type f -name '*.zip' -delete
+          cat > README.md <<'EOF'
+          # Lunex
+          
+          Lunex is a multi-client messenger project. The Android client is in the repository root; the web MVP and Node.js/Socket.IO server are in Lunex-MVP/.
+          
+          ## Android
+          Open this repository in Android Studio or use GitHub Actions → Build Lunex APK.
+          
+          ## Web MVP
+          See Lunex-MVP/README.md, Lunex-MVP/docs/DEPLOYMENT.md, and Lunex-MVP/docs/STATUS.md.
+          
+          This repository includes an MVP, not a claim that every planned feature (including production-grade end-to-end encryption and anonymous routing) is complete.
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Restore full Lunex source project and web backend"
+          git push origin HEAD:main
