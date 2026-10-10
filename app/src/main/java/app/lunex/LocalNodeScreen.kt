@@ -3,15 +3,21 @@ package app.lunex
 import android.content.Context
 import android.content.ClipboardManager
 import android.content.ClipData
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -46,8 +52,23 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
     var peerEndpoint by remember { mutableStateOf("") }
     var chatDraft by remember { mutableStateOf("") }
     var localMessages by remember { mutableStateOf(emptyList<LocalNodeMessage>()) }
+    var roomFiles by remember { mutableStateOf(emptyList<LocalNodeFile>()) }
     val peers = nodeState.peers
     val transport = remember { LocalNodeRuntime.ensure(context) }
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        val room = selected
+        if (uri != null && room != null) {
+            status = "Добавляю файл в комнату…"
+            transport.shareFile(uri, room.id, activeName) { _, message ->
+                status = message
+                roomFiles = store.files(room.id)
+            }
+        }
+    }
+    LaunchedEffect(nodeState.lastFile?.id, selected?.id) {
+        val room = selected
+        roomFiles = if (room == null) emptyList() else store.files(room.id)
+    }
     LaunchedEffect(nodeState.lastMessage?.id, selected?.id) {
         val room = selected
         if (room != null && nodeState.lastMessage?.roomId == room.id) {
@@ -104,7 +125,7 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                         if (ok) {
                             rooms = store.rooms()
                             selected = rooms.lastOrNull()
-                            selected?.let { localMessages = store.messages(it.id) }
+                            selected?.let { localMessages = store.messages(it.id); roomFiles = store.files(it.id) }
                             peerEndpoint = ""
                             inviteToJoin = ""
                         }
@@ -130,7 +151,7 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                                 status = message
                                 rooms = store.rooms()
                                 selected = rooms.lastOrNull()
-                                selected?.let { localMessages = store.messages(it.id) }
+                                selected?.let { localMessages = store.messages(it.id); roomFiles = store.files(it.id) }
                                 inviteToJoin = ""
                             } else tryPeer(index + 1)
                         }
@@ -141,7 +162,7 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
             OutlinedTextField(roomName, { roomName = it }, label = { Text("Название комнаты") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Button(onClick = { try { selected = store.createRoom(roomName); rooms = store.rooms(); roomName = ""; invite = ""; status = "" } catch (e: Exception) { status = e.message ?: "Ошибка" } }, modifier = Modifier.fillMaxWidth()) { Text("Создать комнату") }
             LazyColumn(Modifier.weight(1f)) { items(rooms, key = { it.id }) { room ->
-                Row(Modifier.fillMaxWidth().clickable { selected = room; invite = ""; localMessages = store.messages(room.id) }.padding(8.dp)) {
+                Row(Modifier.fillMaxWidth().clickable { selected = room; invite = ""; localMessages = store.messages(room.id); roomFiles = store.files(room.id) }.padding(8.dp)) {
                     Column(Modifier.weight(1f)) { Text(room.name, color = Color.White); Text("ID: " + room.id, color = Color(0xFFAAA0BC), fontSize = 10.sp) }
                     TextButton(onClick = { try { selected = room; invite = store.createInvite(room.id); transport.syncAll(); status = "" } catch (e: Exception) { status = e.message ?: "Ошибка" } }) { Text("Пригласить") }
                 }
@@ -160,6 +181,38 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                     }
                 } else {
                     Text("Нажми «Пригласить», чтобы создать ссылку для этой комнаты.", color = Color(0xFFAAA0BC), fontSize = 11.sp)
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Файлы комнаты", color = Color.White, fontWeight = FontWeight.Bold)
+                    OutlinedButton(
+                        onClick = { filePicker.launch(arrayOf("*/*")) },
+                        enabled = store.inviteTokenForRoom(room.id) != null
+                    ) {
+                        Icon(Icons.Default.AttachFile, contentDescription = null)
+                        Text("Прикрепить (до 25 МБ)")
+                    }
+                }
+                if (roomFiles.isEmpty()) {
+                    Text("Пока нет файлов в этой комнате.", color = Color(0xFFAAA0BC), fontSize = 11.sp)
+                } else {
+                    roomFiles.takeLast(5).forEach { file ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(file.fileName, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                Text("${(file.sizeBytes + 1023) / 1024} КБ · ${file.senderName}", color = Color(0xFFAAA0BC), fontSize = 10.sp)
+                            }
+                            TextButton(onClick = {
+                                try {
+                                    val fileUri = FileProvider.getUriForFile(context, "${context.packageName}.files", java.io.File(file.localPath))
+                                    val intent = Intent(Intent.ACTION_VIEW).setDataAndType(fileUri, file.mimeType)
+                                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    context.startActivity(Intent.createChooser(intent, "Открыть файл"))
+                                } catch (e: Exception) {
+                                    status = e.message ?: "Не удалось открыть файл."
+                                }
+                            }) { Text("Открыть") }
+                        }
+                    }
                 }
                 Text("Сообщения комнаты", color = Color.White, fontWeight = FontWeight.Bold)
                 LazyColumn(Modifier.weight(1f, fill = false).heightIn(max = 220.dp)) {
