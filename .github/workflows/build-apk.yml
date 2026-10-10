@@ -36,6 +36,11 @@ jobs:
             find extracted -maxdepth 3 -type f | head -100
             exit 1
           fi
+          # Android resource filenames cannot contain hyphens; normalize the avatar filename before compiling.
+          find "$project/app/src/main/res" -type f -name 'lunex-avatar.png' -print0 | while IFS= read -r -d '' file; do
+            dir="$(dirname "$file")"
+            mv "$file" "$dir/lunex_avatar.png"
+          done
           echo "LUNEX_PROJECT_DIR=$project" >> "$GITHUB_ENV"
 
       - name: Set up Java
