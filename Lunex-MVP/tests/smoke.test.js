@@ -117,7 +117,7 @@ test('live server relays authenticated WebRTC signaling only to direct-chat part
   await once(probe, 'listening');
   const port = probe.address().port;
   await new Promise(resolve => probe.close(resolve));
-  const child = spawn(process.execPath, ['server/index.js'], { cwd: root, env: { ...process.env, PORT: String(port), LUNEX_DATA_FILE: path.join(tempDir, 'db.json'), LUNEX_ALLOWED_ORIGINS: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['server/index.js'], { cwd: root, env: { ...process.env, PORT: String(port), LUNEX_DATA_FILE: path.join(tempDir, 'db.json'), LUNEX_ALLOWED_ORIGINS: '', LUNEX_TURN_URLS: 'turn:turn.example.test:3478?transport=udp', LUNEX_TURN_SECRET: 'test-turn-secret' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let logs = '';
   child.stdout.on('data', chunk => { logs += chunk.toString(); });
   child.stderr.on('data', chunk => { logs += chunk.toString(); });
@@ -162,6 +162,13 @@ test('live server relays authenticated WebRTC signaling only to direct-chat part
   const alice = await register('call_alice');
   const bob = await register('call_bob');
   const mallory = await register('call_mallory');
+  const callConfigResponse = await fetch(base + '/api/call-config', { headers: { authorization: `Bearer ${alice.token}` } });
+  assert.equal(callConfigResponse.status, 200);
+  const callConfig = await callConfigResponse.json();
+  assert.equal(callConfig.turnConfigured, true);
+  assert.equal(callConfig.iceServers.length, 2);
+  assert.match(callConfig.iceServers[1].username, /^\\d+:.*$/);
+  assert.ok(callConfig.iceServers[1].credential);
   const dmRes = await fetch(base + '/api/dms', { method: 'POST', headers: { authorization: `Bearer ${alice.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ username: 'call_bob' }) });
   assert.equal(dmRes.status, 200);
   const dm = await dmRes.json();
