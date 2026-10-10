@@ -1,6 +1,8 @@
 package app.lunex
 
 import android.content.Context
+import android.content.ClipboardManager
+import android.content.ClipData
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -8,6 +10,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -73,11 +77,29 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
             peers.forEach { peer -> Text("• ${peer.name}", color = Color(0xFFAAA0BC), fontSize = 12.sp) }
             OutlinedTextField(inviteToJoin, { inviteToJoin = it }, label = { Text("Код приглашения другой комнаты") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Button(onClick = {
-                val peer = peers.firstOrNull()
-                if (peer == null) status = "Сначала подключи оба телефона к одной Wi-Fi сети и дождись обнаружения узла."
-                else transport.join(peer, inviteToJoin.trim()) { ok, message ->
-                    status = message
-                    if (ok) { rooms = store.rooms(); selected = rooms.lastOrNull(); selected?.let { localMessages = store.messages(it.id) }; inviteToJoin = "" }
+                val raw = inviteToJoin.trim()
+                val token = Regex("[?&]token=([^&]+)").find(raw)?.groupValues?.get(1)
+                    ?.let { java.net.URLDecoder.decode(it, "UTF-8") } ?: raw
+                if (peers.isEmpty()) {
+                    status = "Другие узлы пока не обнаружены. Для текущей версии оба телефона должны быть в одной Wi-Fi сети."
+                } else {
+                    status = "Пробую подключиться к ${peers.size} узлам…"
+                    fun tryPeer(index: Int) {
+                        if (index >= peers.size) {
+                            status = "Не удалось найти узел, которому принадлежит это приглашение."
+                            return
+                        }
+                        transport.join(peers[index], token) { ok, message ->
+                            if (ok) {
+                                status = message
+                                rooms = store.rooms()
+                                selected = rooms.lastOrNull()
+                                selected?.let { localMessages = store.messages(it.id) }
+                                inviteToJoin = ""
+                            } else tryPeer(index + 1)
+                        }
+                    }
+                    tryPeer(0)
                 }
             }, modifier = Modifier.fillMaxWidth(), enabled = inviteToJoin.isNotBlank()) { Text("Подключиться к приглашению") }
             OutlinedTextField(roomName, { roomName = it }, label = { Text("Название комнаты") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -89,7 +111,20 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                 }
             } }
             selected?.let { room ->
-                Text("Приглашение: lunex://join/" + room.id + "?token=" + invite, color = Color.White, fontSize = 11.sp)
+                if (invite.isNotBlank()) {
+                    val inviteUri = "lunex://join/" + room.id + "?token=" + invite
+                    Text("Приглашение", color = Color(0xFFAAA0BC), fontSize = 11.sp)
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Text(inviteUri, color = Color.White, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                        IconButton(onClick = {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("Lunex invitation", inviteUri))
+                            status = "Приглашение скопировано."
+                        }) { Icon(Icons.Default.ContentCopy, contentDescription = "Скопировать приглашение", tint = Color(0xFFB56BFF)) }
+                    }
+                } else {
+                    Text("Нажми «Пригласить», чтобы создать ссылку для этой комнаты.", color = Color(0xFFAAA0BC), fontSize = 11.sp)
+                }
                 Text("Сообщения комнаты", color = Color.White, fontWeight = FontWeight.Bold)
                 LazyColumn(Modifier.weight(1f, fill = false).heightIn(max = 220.dp)) {
                     items(localMessages, key = { it.id }) { msg ->
