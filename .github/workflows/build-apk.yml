@@ -3,7 +3,7 @@ name: Build Lunex APK
 on:
   workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches: [ '**' ]
     paths:
       - 'app/**'
       - 'Lunex-MVP/**'
