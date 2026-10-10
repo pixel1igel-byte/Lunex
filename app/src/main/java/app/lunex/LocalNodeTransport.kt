@@ -178,6 +178,7 @@ internal class LocalNodeTransport(
     fun shareFile(uri: Uri, roomId: String, senderName: String, callback: (Boolean, String) -> Unit) {
         io.execute {
             var created: File? = null
+            var persisted = false
             try {
                 require(store.inviteTokensForRoom(roomId).isNotEmpty()) { "Сначала создай приглашение для комнаты." }
                 var fileName = uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "file"
@@ -216,13 +217,14 @@ internal class LocalNodeTransport(
                     size, sha, ((size + FILE_CHUNK_BYTES - 1) / FILE_CHUNK_BYTES).toInt(),
                     System.currentTimeMillis(), destination.absolutePath, true
                 )
-                store.insertFile(metadata)
+                require(store.insertFile(metadata)) { "ID файла уже существует." }
+                persisted = true
                 onFile(metadata)
                 main.post { onStatus("Файл «$fileName» сохранён локально; синхронизирую с узлами комнаты…") }
-                syncAll()
+                runCatching { syncAll() }
                 main.post { callback(true, "Файл «$fileName» добавлен. Передача узлам идёт в фоне, повторная синхронизация будет при их подключении.") }
             } catch (e: Exception) {
-                created?.let { runCatching { it.delete() } }
+                if (!persisted) created?.let { runCatching { it.delete() } }
                 main.post { callback(false, e.message ?: "Не удалось добавить файл.") }
             }
         }
