@@ -168,8 +168,8 @@ private fun LunexApp() {
         }
         if (needed.isEmpty()) action() else { pendingCallAction = action; permissionLauncher.launch(needed.toTypedArray()) }
     }
-    val callManager = remember(context, server, token, iceServers) {
-        AndroidCallManager(context, server, token, iceServers,
+    val callManager = remember(context, token, iceServers) {
+        AndroidCallManager(context, iceServers,
             onIncoming = { event -> android.os.Handler(android.os.Looper.getMainLooper()).post { incomingCall = event; callMode = event.optString("mode", "audio") } },
             onState = { state -> android.os.Handler(android.os.Looper.getMainLooper()).post {
                 callState = if (state in setOf("ended", "rejected", "failed")) "idle" else state
