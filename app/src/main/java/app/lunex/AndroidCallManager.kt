@@ -347,6 +347,7 @@ internal class AndroidCallManager(
     }
 
     private fun fail(message: String) {
+        if (currentCallId.isNotBlank()) socket?.emit("call:end", JSONObject().put("callId", currentCallId).put("conversationId", currentConversationId))
         closeInternal()
         onState("failed")
         onError(message)
