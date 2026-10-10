@@ -107,3 +107,11 @@ button:disabled{cursor:not-allowed}
 @media(max-width:620px){.directory-page{padding:22px 14px}.directory-heading{align-items:flex-start;flex-direction:column;margin-bottom:20px}.directory-heading>.primary{width:100%}.call-directory-row{gap:9px;padding:10px}.call-directory-row .secondary{font-size:0;padding:10px}.call-directory-row .secondary svg{width:18px;height:18px}}
 
 .online-dot.connected{background:#6de3a5;box-shadow:0 0 0 3px #6de3a51a}.online-dot.offline{background:#f06b82;box-shadow:0 0 0 3px #f06b821a}
+
+
+.mobile-tabs{display:none}
+@media(max-width:620px){
+ .mobile-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;margin:0 10px 14px}
+ .mobile-tabs button{min-width:0;display:flex;align-items:center;justify-content:center;gap:5px;border:1px solid transparent;border-radius:10px;background:transparent;color:var(--muted);font-size:10px;padding:9px 4px}
+ .mobile-tabs button.active{background:color-mix(in srgb,var(--accent) 13%,var(--panel));border-color:color-mix(in srgb,var(--accent) 24%,transparent);color:var(--accent)}
+}
