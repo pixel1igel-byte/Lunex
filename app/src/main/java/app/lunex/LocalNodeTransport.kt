@@ -370,12 +370,14 @@ internal class LocalNodeTransport(
         if (roomTokens.isEmpty()) return
         val queue = java.util.ArrayDeque<LanPeer>()
         val visited = mutableSetOf<String>()
+        val queued = mutableSetOf<String>()
         queue.add(seedPeer)
         while (queue.isNotEmpty() && visited.size < 128) {
             val current = queue.removeFirst()
             val hello = runCatching { request(current, JSONObject().put("op", "hello")) }.getOrNull() ?: continue
             val currentId = hello.optString("nodeId")
             if (!hello.optBoolean("ok") || currentId.isBlank() || currentId == store.serverId() || !visited.add(currentId)) continue
+            queued.add(currentId)
 
             var response: JSONObject? = null
             for (token in roomTokens) {
@@ -392,7 +394,7 @@ internal class LocalNodeTransport(
                 val advertised = list.optJSONObject(index) ?: continue
                 val expectedId = advertised.optString("nodeId")
                 val endpoint = advertised.optString("endpoint")
-                if (expectedId.isBlank() || endpoint.isBlank() || expectedId == store.serverId() || expectedId in visited) continue
+                if (expectedId.isBlank() || endpoint.isBlank() || expectedId == store.serverId() || expectedId in visited || !queued.add(expectedId)) continue
                 val candidatePeer = runCatching {
                     parseEndpoint(endpoint, advertised.optString("name").ifBlank { endpoint })
                 }.getOrNull() ?: continue
