@@ -128,3 +128,5 @@ button:disabled{cursor:not-allowed}
 .notification-copy>span{font-size:12px;line-height:1.5;color:#d2c6df;overflow-wrap:anywhere}
 .notification-copy time{font-size:10px;color:var(--muted)}
 .notification-unread-dot{width:8px;height:8px;flex-shrink:0;border-radius:50%;background:var(--accent);margin:6px}
+
+.rail-notification-dot{position:absolute;right:8px;top:8px;width:7px;height:7px;border-radius:50%;background:#ff6b82;box-shadow:0 0 0 2px #0c0912}
