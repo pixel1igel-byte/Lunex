@@ -590,11 +590,16 @@ io.on('connection', socket => {
     const text = typeof payload?.text === 'string' ? payload.text.trim().slice(0, MAX_MESSAGE_LENGTH) : '';
     const conversation = db.dms.find(d => d.id === conversationId && d.userIds.includes(socket.data.user.id));
     const upload = payload?.attachmentId ? db.uploads.find(item => item.id === payload.attachmentId && item.scope === 'dm' && item.scopeId === conversationId) : null;
+    const clientMessageId = typeof payload?.clientMessageId === 'string' && /^[a-zA-Z0-9_-]{8,80}$/.test(payload.clientMessageId) ? payload.clientMessageId : '';
     if (!conversation || !socket.rooms.has(`dm:${conversationId}`) || (!text && !upload)) return;
-    const message = { id: randomBytes(12).toString('hex'), userId: socket.data.user.id, user: socket.data.user.displayName, text, time: new Date().toISOString(), ...(upload ? { attachment: { id: upload.id, name: upload.name, type: upload.type, size: upload.size } } : {}) };
+    // Idempotent retry: the same locally queued message can be resent after reconnect.
+    const existing = clientMessageId ? conversation.messages.find(m => m.clientMessageId === clientMessageId && m.userId === socket.data.user.id) : null;
+    if (existing) { socket.emit('message:ack', { clientMessageId, message: existing }); return; }
+    const message = { id: randomBytes(12).toString('hex'), ...(clientMessageId ? { clientMessageId } : {}), userId: socket.data.user.id, user: socket.data.user.displayName, text, time: new Date().toISOString(), ...(upload ? { attachment: { id: upload.id, name: upload.name, type: upload.type, size: upload.size } } : {}) };
     conversation.messages.push(message); conversation.messages = conversation.messages.slice(-MAX_HISTORY); saveDb();
     const event = { conversationId, message };
     for (const userId of conversation.userIds) io.to(`user:${userId}`).emit('dm:new', event);
+    if (clientMessageId) socket.emit('message:ack', { clientMessageId, message });
   });
   socket.on('message:send', payload => {
     if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
@@ -604,10 +609,15 @@ io.on('connection', socket => {
     const upload = payload?.attachmentId ? db.uploads.find(item => item.id === payload.attachmentId && item.scope === 'channel' && item.scopeId === channelId) : null;
     const community = db.communities.find(item => (item.channels || []).some(channel => channel.id === channelId));
     const channel = community?.channels.find(item => item.id === channelId);
+    const clientMessageId = typeof payload?.clientMessageId === 'string' && /^[a-zA-Z0-9_-]{8,80}$/.test(payload.clientMessageId) ? payload.clientMessageId : '';
     if (!channelId || (!text && !upload) || !community || !channel || !hasPermission(community, socket.data.user.id, 'send', channel) || !socket.rooms.has(channelId)) return;
-    const message = { id: randomBytes(12).toString('hex'), userId: socket.data.user.id, user: socket.data.user.displayName, text, time: new Date().toISOString(), ...(upload ? { attachment: { id: upload.id, name: upload.name, type: upload.type, size: upload.size } } : {}) };
-    db.messages[channelId] ||= []; db.messages[channelId].push(message); db.messages[channelId] = db.messages[channelId].slice(-MAX_HISTORY); saveDb();
+    db.messages[channelId] ||= [];
+    const existing = clientMessageId ? db.messages[channelId].find(m => m.clientMessageId === clientMessageId && m.userId === socket.data.user.id) : null;
+    if (existing) { socket.emit('message:ack', { clientMessageId, message: existing }); return; }
+    const message = { id: randomBytes(12).toString('hex'), ...(clientMessageId ? { clientMessageId } : {}), userId: socket.data.user.id, user: socket.data.user.displayName, text, time: new Date().toISOString(), ...(upload ? { attachment: { id: upload.id, name: upload.name, type: upload.type, size: upload.size } } : {}) };
+    db.messages[channelId].push(message); db.messages[channelId] = db.messages[channelId].slice(-MAX_HISTORY); saveDb();
     io.to(channelId).emit('message:new', { channelId, message });
+    if (clientMessageId) socket.emit('message:ack', { clientMessageId, message });
   });
 });
 server.listen(PORT, '0.0.0.0', () => console.log(`Lunex server listening on port ${PORT}`));
