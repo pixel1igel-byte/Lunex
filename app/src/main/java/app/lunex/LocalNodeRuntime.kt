@@ -54,10 +54,4 @@ internal object LocalNodeRuntime {
         mutableState.update { it.copy(peers = emptyList(), status = "Узел приостановлен: приложение неактивно") }
     }
 
-    @Synchronized
-    fun stop() {
-        transportInstance?.stop()
-        transportInstance = null
-        mutableState.value = LocalNodeUiState(status = "Узел остановлен")
-    }
 }
