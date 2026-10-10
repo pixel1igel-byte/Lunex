@@ -149,6 +149,8 @@ private fun LunexApp() {
     var communityName by remember { mutableStateOf("") }
     var callState by remember { mutableStateOf("idle") }
     var callMode by remember { mutableStateOf("audio") }
+    var micEnabled by remember { mutableStateOf(true) }
+    var cameraEnabled by remember { mutableStateOf(true) }
     var incomingCall by remember { mutableStateOf<JSONObject?>(null) }
     var localVideoTrack by remember { mutableStateOf<VideoTrack?>(null) }
     var remoteVideoTrack by remember { mutableStateOf<VideoTrack?>(null) }
