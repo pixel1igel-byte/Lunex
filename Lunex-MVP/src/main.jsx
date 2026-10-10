@@ -10,7 +10,7 @@ import {
 import './style.css';
 
 // In production the frontend and API share one HTTPS origin; local Vite uses port 3001.
-const API = import.meta.env.DEV ? 'http://localhost:3001' : location.origin;
+const API = import.meta.env.DEV ? '' : location.origin;
 const socket = io(API, { autoConnect: false, auth: { token: localStorage.getItem('lunex-token') || '' } });
 const DEFAULT_THEME = {
   accent: '#b56bff', background: '#100c19', panel: '#191426', wallpaper: '',
