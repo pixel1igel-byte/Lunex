@@ -29,13 +29,15 @@ jobs:
           root = Path.cwd()
           source = Path('/tmp/lunex-project/Lunex-Android')
           for item in root.iterdir():
-              if item.name == '.git':
+              if item.name in {'.git', '.github'}:
                   continue
               if item.is_dir() and not item.is_symlink():
                   shutil.rmtree(item)
               else:
                   item.unlink()
           for item in source.iterdir():
+              if item.name == '.github':
+                  continue
               target = root / item.name
               if item.is_dir() and not item.is_symlink():
                   shutil.copytree(item, target)
