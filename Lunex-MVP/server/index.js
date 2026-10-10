@@ -119,7 +119,8 @@ app.get('/api/call-config', authHttp, (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.json({ iceServers, turnConfigured: iceServers.length > 1 });
 });
-app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'Lunex', version: '1.0.0' }));
+app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'Lunex', version: '1.0.1', service: 'lunex-messenger' }));
+app.get('/', (_req, res) => res.json({ ok: true, app: 'Lunex', health: '/api/health', api: '/api' }));
 app.post('/api/auth/register', async (req, res) => {
   if (!allowAuthAttempt(req)) return res.status(429).json({ error: 'Слишком много попыток. Подожди минуту.' });
   const username = cleanUsername(req.body?.username);
