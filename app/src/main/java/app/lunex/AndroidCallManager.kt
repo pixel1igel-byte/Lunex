@@ -42,7 +42,7 @@ internal class AndroidCallManager(
     private val onError: (String) -> Unit
 ) {
     private var socket: Socket? = null
-    private val egl = EglBase.create()
+    private val egl: EglBase
     private val factory: PeerConnectionFactory
     private var peer: PeerConnection? = null
     private var audioSource: AudioSource? = null
@@ -86,6 +86,7 @@ internal class AndroidCallManager(
 
     init {
         ensureInitialized(context)
+        egl = EglBase.create()
         factory = PeerConnectionFactory.builder()
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(egl.eglBaseContext, true, true))
             .setVideoDecoderFactory(DefaultVideoDecoderFactory(egl.eglBaseContext))
