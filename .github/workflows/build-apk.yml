@@ -2,6 +2,14 @@ name: Build Lunex APK
 # Build the Android client with live REST and Socket.IO integration.
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'app/**'
+      - 'Lunex-MVP/**'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/build-apk.yml'
   push:
     branches: [ '**' ]
     paths:
