@@ -4,7 +4,7 @@ import { Server } from 'socket.io';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes, scrypt as scryptCb, timingSafeEqual, createHash } from 'node:crypto';
+import { randomBytes, scrypt as scryptCb, timingSafeEqual, createHash, createHmac } from 'node:crypto';
 import { promisify } from 'node:util';
 import { createRateLimiter, isAllowedOrigin, isValidChannelId, parseAllowedOrigins } from './security.js';
 
@@ -106,6 +106,19 @@ function allowAuthAttempt(req) {
   if (authLimiters.size > 5000) authLimiters.delete(authLimiters.keys().next().value);
   return authLimiters.get(key)();
 }
+app.get('/api/call-config', authHttp, (req, res) => {
+  const iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+  const turnUrls = String(process.env.LUNEX_TURN_URLS || '').split(',').map(value => value.trim()).filter(Boolean);
+  const turnSecret = process.env.LUNEX_TURN_SECRET || '';
+  if (turnUrls.length && turnSecret) {
+    const expiry = Math.floor(Date.now() / 1000) + 3600;
+    const username = `${expiry}:${req.user.id}`;
+    const credential = createHmac('sha1', turnSecret).update(username).digest('base64');
+    iceServers.push({ urls: turnUrls, username, credential });
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ iceServers, turnConfigured: iceServers.length > 1 });
+});
 app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'Lunex', version: '1.0.0' }));
 app.post('/api/auth/register', async (req, res) => {
   if (!allowAuthAttempt(req)) return res.status(429).json({ error: 'Слишком много попыток. Подожди минуту.' });
