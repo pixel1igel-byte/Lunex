@@ -137,8 +137,9 @@ internal class LocalNodeTransport(
                 main.post { onPeersChanged(peers()) }
                 store.joinRoom(roomId, roomName, token)
                 sync(peer, roomId)
+                discoverRoomMesh(namedPeer, roomId)
                 syncAll()
-                main.post { callback(true, "Комната «$roomName» подключена; узел добавлен в mesh.") }
+                main.post { callback(true, "Комната «$roomName» подключена; узлы сети обнаружены и синхронизированы.") }
             } catch (e: Exception) {
                 main.post { callback(false, e.message ?: "Не удалось подключиться к узлу") }
             }
@@ -420,6 +421,9 @@ internal class LocalNodeTransport(
                     store.rememberPeer(actualId, verified.serviceName, endpointOf(verified))
                     if (newlyConnected) {
                         main.post { onPeersChanged(peers()) }
+                        store.rooms().forEach { room ->
+                            if (store.inviteTokensForRoom(room.id).isNotEmpty()) discoverRoomMesh(verified, room.id)
+                        }
                         syncAll()
                     }
                 } else if (peers.remove(saved.peerId) != null) {
@@ -517,6 +521,9 @@ internal class LocalNodeTransport(
                                 peers[peerId] = verifiedPeer
                                 store.rememberPeer(peerId, verifiedPeer.serviceName, endpointOf(verifiedPeer))
                                 main.post { onPeersChanged(peers()) }
+                                store.rooms().forEach { room ->
+                                    if (store.inviteTokensForRoom(room.id).isNotEmpty()) discoverRoomMesh(verifiedPeer, room.id)
+                                }
                                 syncAll()
                             }
                         }
