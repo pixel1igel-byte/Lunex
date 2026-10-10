@@ -137,3 +137,26 @@ button:disabled{cursor:not-allowed}
 .attachment-chip span{font-size:12px;overflow-wrap:anywhere;min-width:0}
 .attachment-chip small{font-size:10px;color:var(--muted);white-space:nowrap}
 .attachment-chip:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+
+
+/* Community administration */
+.category-heading,.channel-row-wrap{display:flex;align-items:center;min-width:0;gap:3px}
+.category-heading{padding:8px 14px 2px 17px;color:#8f829e;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.08em}
+.category-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.category-actions,.channel-actions{display:flex;align-items:center;gap:2px;opacity:.7}
+.category-actions button,.channel-actions button{border:0;background:transparent;color:#a99fb8;border-radius:5px;min-width:22px;min-height:22px;cursor:pointer;font-size:15px;line-height:1}
+.category-actions button:hover,.channel-actions button:hover{background:#352743;color:#fff}
+.channel-row-wrap .channel-row{flex:1;min-width:0;width:auto;margin-left:11px}
+.channel-row-wrap .channel-actions{padding-right:5px}
+.community-tools{display:flex;flex-direction:column;gap:1px;margin:4px 0 10px}
+.invite-code{padding:14px;border:1px dashed #6c4a8c;border-radius:10px;text-align:center;font:700 18px ui-monospace,monospace;letter-spacing:.08em;overflow-wrap:anywhere;margin:12px 0 18px;color:#e5c6ff;background:#171021}
+.members-modal{max-height:min(82vh,720px);overflow:auto}
+.member-row{display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid #30243b}
+.member-row .row-main{min-width:0}
+.member-row select,.modal-option select{background:#171021;color:#eee;border:1px solid #483458;border-radius:8px;padding:7px;max-width:45%}
+.role-editor{border:1px solid #352742;border-radius:12px;padding:12px;margin:12px 0}
+.role-editor h3{margin:0 0 10px;font-size:14px}
+.permission-row,.modal-option{display:flex;align-items:center;gap:9px;padding:7px 0;color:#c9bed4;font-size:12px}
+.permission-row input,.modal-option input{accent-color:var(--accent)}
+.role-editor .primary{margin-top:8px}
+@media(max-width:520px){.member-row{flex-wrap:wrap}.member-row .row-main{flex-basis:100%}.member-row select{max-width:none;flex:1}}
