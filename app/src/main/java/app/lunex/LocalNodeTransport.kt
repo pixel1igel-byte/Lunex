@@ -71,6 +71,9 @@ internal class LocalNodeTransport(
 
     fun peers(): List<LanPeer> = peers.values.toList()
 
+    /** Current port; internet reachability may require router port forwarding. */
+    fun listeningPort(): Int = port
+
     fun join(peer: LanPeer, token: String, callback: (Boolean, String) -> Unit) {
         io.execute {
             try {
