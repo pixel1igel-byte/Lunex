@@ -34,5 +34,6 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.2")
     implementation("io.socket:socket.io-client:2.1.0")
+    implementation("io.github.webrtc-sdk:android:150.7871.01")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
