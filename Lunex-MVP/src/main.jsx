@@ -53,6 +53,7 @@ function App() {
   const fileRef = useRef(null);
   const wallpaperRef = useRef(null);
   const peerRef = useRef(null);
+  const pendingIceRef = useRef([]);
   const localStreamRef = useRef(null);
   const callRef = useRef(null);
   const [callState, setCallState] = useState('idle');
@@ -110,7 +111,7 @@ function App() {
     const current = callRef.current;
     if (notify && current) socket.emit('call:end', { callId: current.callId, conversationId: current.conversationId });
     try { peerRef.current?.close(); } catch {}
-    peerRef.current = null;
+    peerRef.current = null; pendingIceRef.current = [];
     localStreamRef.current?.getTracks().forEach(track => track.stop());
     localStreamRef.current = null; callRef.current = null;
     setLocalStream(null); setRemoteStream(null); setIncomingCall(null); setCallState('idle'); setCallMuted(false); setCameraOff(false);
@@ -148,6 +149,8 @@ function App() {
       callRef.current = call; setCallMode(incoming.mode); setCallState('connected');
       const pc = await createPeer(call, stream);
       await pc.setRemoteDescription(new RTCSessionDescription(incoming.offer));
+      for (const item of pendingIceRef.current.filter(item => item.callId === call.callId)) { try { await pc.addIceCandidate(new RTCIceCandidate(item.signal.candidate)); } catch {} }
+      pendingIceRef.current = pendingIceRef.current.filter(item => item.callId !== call.callId);
       const answer = await pc.createAnswer(); await pc.setLocalDescription(answer);
       socket.emit('call:accept', { callId: call.callId, conversationId: call.conversationId, answer: pc.localDescription });
       setIncomingCall(null);
@@ -155,10 +158,11 @@ function App() {
   }
   useEffect(() => {
     const onIncoming = event => { if (callRef.current) { socket.emit('call:reject', event); return; } setIncomingCall(event); setCallMode(event.mode); setCallState('incoming'); };
-    const onAccepted = async event => { if (callRef.current?.callId !== event.callId || !peerRef.current) return; try { await peerRef.current.setRemoteDescription(new RTCSessionDescription(event.answer)); setCallState('connected'); } catch { setNotice('Не удалось установить соединение звонка.'); closeCall(false); } };
+    const onAccepted = async event => { if (callRef.current?.callId !== event.callId || !peerRef.current) return; try { await peerRef.current.setRemoteDescription(new RTCSessionDescription(event.answer)); for (const item of pendingIceRef.current.filter(item => item.callId === event.callId)) { try { await peerRef.current.addIceCandidate(new RTCIceCandidate(item.signal.candidate)); } catch {} } pendingIceRef.current = pendingIceRef.current.filter(item => item.callId !== event.callId); setCallState('connected'); } catch { setNotice('Не удалось установить соединение звонка.'); closeCall(false); } };
     const onSignal = async event => {
-      if (callRef.current?.callId !== event.callId || !peerRef.current) return;
-      try { if (event.signal?.candidate) await peerRef.current.addIceCandidate(new RTCIceCandidate(event.signal.candidate)); } catch { /* ICE candidate may arrive before peer negotiation completes. */ }
+      if (!event.signal?.candidate) return;
+      if (callRef.current?.callId !== event.callId || !peerRef.current || !peerRef.current.remoteDescription) { pendingIceRef.current.push(event); if (pendingIceRef.current.length > 100) pendingIceRef.current.shift(); return; }
+      try { await peerRef.current.addIceCandidate(new RTCIceCandidate(event.signal.candidate)); } catch { pendingIceRef.current.push(event); }
     };
     const onRejected = event => { if (callRef.current?.callId === event.callId) { closeCall(false); setNotice('Собеседник отклонил звонок.'); } };
     const onEnded = event => { if (callRef.current?.callId === event.callId) { closeCall(false); setNotice('Звонок завершён.'); } };
