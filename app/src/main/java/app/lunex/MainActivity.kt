@@ -143,6 +143,7 @@ private fun LunexApp() {
     var displayName by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var register by remember { mutableStateOf(false) }
+    var localMode by remember { mutableStateOf(true) }
     var currentName by remember { mutableStateOf("") }
     var communities by remember { mutableStateOf(emptyList<Community>()) }
     var activeCommunity by remember { mutableStateOf("") }
@@ -348,7 +349,9 @@ private fun LunexApp() {
 
     MaterialTheme(colorScheme = darkColorScheme(primary = Purple, secondary = Color(0xFFFF73D1), background = Night, surface = Panel, onBackground = White, onSurface = White)) {
         Surface(Modifier.fillMaxSize(), color = Night) {
-            if (token.isBlank()) {
+            if (localMode) {
+                LocalNodeScreen(onSwitchToCloud = { localMode = false })
+            } else if (token.isBlank()) {
                 Column(Modifier.fillMaxSize().padding(22.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Default.DarkMode, null, tint = Purple, modifier = Modifier.size(42.dp))
                     Text("LUNEX", fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 4.sp)
