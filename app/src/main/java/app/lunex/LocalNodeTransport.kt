@@ -14,7 +14,11 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.security.MessageDigest
+import java.security.SecureRandom
+import java.util.Base64
+import javax.crypto.Cipher
 import javax.crypto.Mac
+import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -23,7 +27,7 @@ import java.util.concurrent.TimeUnit
 
 private const val LUNEX_NODE_PORT = 45873
 private const val MAX_REQUEST_FRAME_CHARS = 65_536
-private const val MAX_RESPONSE_FRAME_CHARS = 16_777_216
+private const val MAX_RESPONSE_FRAME_CHARS = 24_000_000
 
 internal data class LanPeer(val name: String, val host: InetAddress, val port: Int, val serviceName: String = name)
 
@@ -213,7 +217,25 @@ internal class LocalNodeTransport(
         client.use { socket ->
             socket.soTimeout = 10000
             val line = readBoundedLine(BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8)), MAX_REQUEST_FRAME_CHARS) ?: return
-            val request = JSONObject(line)
+            val wireRequest = JSONObject(line)
+            var responseToken: String? = null
+            val request = if (wireRequest.optBoolean("encrypted")) {
+                val keyId = wireRequest.optString("keyId")
+                val token = store.allInviteTokens().firstOrNull { tokenHash(it) == keyId }
+                if (token == null) {
+                    PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true)
+                        .println(JSONObject().put("ok", false).put("error", "Encrypted frame rejected").toString())
+                    return
+                }
+                try {
+                    responseToken = token
+                    decryptEnvelope(wireRequest, token)
+                } catch (_: Exception) {
+                    PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true)
+                        .println(JSONObject().put("ok", false).put("error", "Encrypted frame rejected").toString())
+                    return
+                }
+            } else wireRequest
             val response = try {
                 when (request.optString("op")) {
                     "hello" -> JSONObject().put("ok", true).put("nodeId", store.serverId()).put("name", android.os.Build.MODEL)
@@ -310,7 +332,8 @@ internal class LocalNodeTransport(
             } catch (e: Exception) {
                 JSONObject().put("ok", false).put("error", e.message ?: "Ошибка запроса")
             }
-            PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true).println(response.toString())
+            val wireResponse = responseToken?.let { encryptEnvelope(response, it) } ?: response
+            PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true).println(wireResponse.toString())
         }
     }
 
@@ -557,12 +580,47 @@ internal class LocalNodeTransport(
         Socket().use { socket ->
             socket.connect(java.net.InetSocketAddress(peer.host, peer.port), 4000)
             socket.soTimeout = 6000
-            PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true).println(payload.toString())
+            val secret = payload.optString("token").ifBlank { payload.optString("authToken") }.ifBlank { null }
+            val wirePayload = secret?.let { encryptEnvelope(payload, it) } ?: payload
+            PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true).println(wirePayload.toString())
             val line = readBoundedLine(BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8)), MAX_RESPONSE_FRAME_CHARS)
                 ?: throw IllegalStateException("Узел не ответил")
-            return JSONObject(line)
+            val wireResponse = JSONObject(line)
+            return if (wireResponse.optBoolean("encrypted")) {
+                val key = secret ?: throw IllegalStateException("Неожиданный зашифрованный ответ.")
+                decryptEnvelope(wireResponse, key)
+            } else wireResponse
         }
     }
+
+    /** Encrypts every room-authenticated request/response with AES-GCM using the shared room invite secret. */
+    private fun encryptEnvelope(payload: JSONObject, token: String): JSONObject {
+        val nonce = ByteArray(12).also { SecureRandom().nextBytes(it) }
+        val key = MessageDigest.getInstance("SHA-256").digest(token.toByteArray(Charsets.UTF_8))
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
+        val encrypted = cipher.doFinal(payload.toString().toByteArray(Charsets.UTF_8))
+        return JSONObject()
+            .put("encrypted", true)
+            .put("keyId", tokenHash(token))
+            .put("nonce", Base64.getUrlEncoder().withoutPadding().encodeToString(nonce))
+            .put("ciphertext", Base64.getUrlEncoder().withoutPadding().encodeToString(encrypted))
+    }
+
+    private fun decryptEnvelope(envelope: JSONObject, token: String): JSONObject {
+        require(envelope.optString("keyId") == tokenHash(token)) { "Неверный ключ кадра." }
+        val nonce = Base64.getUrlDecoder().decode(envelope.getString("nonce"))
+        require(nonce.size == 12) { "Некорректный nonce." }
+        val encrypted = Base64.getUrlDecoder().decode(envelope.getString("ciphertext"))
+        val key = MessageDigest.getInstance("SHA-256").digest(token.toByteArray(Charsets.UTF_8))
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
+        return JSONObject(String(cipher.doFinal(encrypted), Charsets.UTF_8))
+    }
+
+    private fun tokenHash(token: String): String =
+        MessageDigest.getInstance("SHA-256").digest(token.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
     private fun registerService() {
         val info = NsdServiceInfo().apply {
