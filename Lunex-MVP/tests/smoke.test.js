@@ -84,3 +84,21 @@ test('release documentation distinguishes implemented features from missing priv
   assert.match(status, /Main-app end-to-end encryption/i);
   assert.match(status, /not implemented/i);
 });
+
+test('WebRTC call signaling is authenticated and restricted to DM participants', () => {
+  const server = fs.readFileSync(path.join(root, 'server/index.js'), 'utf8');
+  const app = fs.readFileSync(path.join(root, 'src/main.jsx'), 'utf8');
+  assert.match(server, /socket\.on\('call:invite'/);
+  assert.match(server, /socket\.on\('call:accept'/);
+  assert.match(server, /socket\.on\('call:signal'/);
+  assert.match(server, /socket\.on\('call:reject'/);
+  assert.match(server, /socket\.on\('call:end'/);
+  assert.match(server, /conversation\.userIds\.includes\(targetId\)/);
+  assert.match(server, /callForUser\(payload\.callId, socket\.data\.user\.id\)/);
+  assert.match(server, /camera=\(self\), microphone=\(self\)/);
+  assert.match(app, /new RTCPeerConnection/);
+  assert.match(app, /getUserMedia/);
+  assert.match(app, /call:incoming/);
+  assert.match(app, /call:accepted/);
+  assert.match(app, /call:signal/);
+});
