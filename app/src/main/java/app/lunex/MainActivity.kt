@@ -8,27 +8,48 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import io.socket.client.IO
+import io.socket.client.Socket
+import io.socket.emitter.Emitter
 
 private val Night = Color(0xFF0D0B16)
 private val Panel = Color(0xFF191426)
 private val Panel2 = Color(0xFF241B35)
 private val Purple = Color(0xFFB56BFF)
-private val Pink = Color(0xFFFF73D1)
 private val Muted = Color(0xFFAAA0BC)
 private val White = Color(0xFFF8F3FF)
+private const val DEFAULT_SERVER = "https://lunex-messenger.onrender.com"
+
+private data class Channel(val id: String, val name: String, val type: String)
+private data class Community(val id: String, val name: String, val channels: List<Channel>)
+private data class ChatMessage(val id: String, val user: String, val text: String, val time: String, val userId: String = "")
+private data class DirectChat(val id: String, val username: String, val displayName: String, val lastMessage: String)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -37,292 +58,307 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Tab(val label: String) {
-    Chats("Чаты"), Calls("Звонки"), Communities("Серверы"),
-    Alerts("Уведомления"), Settings("Ещё")
+private suspend fun request(base: String, path: String, method: String = "GET", token: String? = null, body: JSONObject? = null): JSONObject {
+    return withContext(Dispatchers.IO) {
+        val url = URL(base.trimEnd('/') + path)
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = method
+            connectTimeout = 12000
+            readTimeout = 12000
+            setRequestProperty("Accept", "application/json")
+            if (token != null) setRequestProperty("Authorization", "Bearer $token")
+            if (body != null) {
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            }
+        }
+        try {
+            val status = conn.responseCode
+            val stream = if (status in 200..299) conn.inputStream else conn.errorStream
+            val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            val json = if (text.isBlank()) JSONObject() else JSONObject(text)
+            if (status !in 200..299) throw IllegalStateException(json.optString("error").ifBlank { "Ошибка сервера ($status)" })
+            json
+        } finally { conn.disconnect() }
+    }
 }
 
-private data class Chat(val name: String, val message: String, val time: String, val unread: Int, val avatar: String)
+private suspend fun requestArray(base: String, path: String, token: String): JSONArray {
+    return withContext(Dispatchers.IO) {
+        val conn = (URL(base.trimEnd('/') + path).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 12000; readTimeout = 12000
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("Authorization", "Bearer $token")
+        }
+        try {
+            val status = conn.responseCode
+            val stream = if (status in 200..299) conn.inputStream else conn.errorStream
+            val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            if (status !in 200..299) throw IllegalStateException(runCatching { JSONObject(text).optString("error") }.getOrDefault("Ошибка сервера ($status)"))
+            JSONArray(text)
+        } finally { conn.disconnect() }
+    }
+}
 
 @Composable
 private fun LunexApp() {
-    var tab by remember { mutableStateOf(Tab.Chats) }
-    var selectedChat by remember { mutableStateOf<Chat?>(null) }
-    var accent by remember { mutableStateOf(Purple) }
-    var animations by remember { mutableStateOf(true) }
-    var transparency by remember { mutableFloatStateOf(0.72f) }
-    val chats = listOf(
-        Chat("Luna", "Смотри, какой красивый фон ✨", "15:24", 2, "L"),
-        Chat("The Void", "Kira: вечером играем?", "15:02", 12, "V"),
-        Chat("Аниме чат", "Новое видео", "14:48", 0, "A"),
-        Chat("Max", "Отправил файл", "13:30", 0, "M"),
-        Chat("Работа", "Документ готов", "Вчера", 0, "Р")
-    )
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val prefs = remember { context.getSharedPreferences("lunex", MODE_PRIVATE) }
+    val scope = rememberCoroutineScope()
+    var server by remember { mutableStateOf(prefs.getString("server", DEFAULT_SERVER) ?: DEFAULT_SERVER) }
+    var token by remember { mutableStateOf(prefs.getString("token", "") ?: "") }
+    var username by remember { mutableStateOf("") }
+    var displayName by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var register by remember { mutableStateOf(false) }
+    var currentName by remember { mutableStateOf("") }
+    var communities by remember { mutableStateOf(emptyList<Community>()) }
+    var activeCommunity by remember { mutableStateOf("") }
+    var activeChannel by remember { mutableStateOf("") }
+    var activeChannelName by remember { mutableStateOf("общение") }
+    var messages by remember { mutableStateOf(emptyList<ChatMessage>()) }
+    var dms by remember { mutableStateOf(emptyList<DirectChat>()) }
+    var activeDm by remember { mutableStateOf<DirectChat?>(null) }
+    var dmUsername by remember { mutableStateOf("") }
+    var draft by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    var notice by remember { mutableStateOf("") }
+    var showServer by remember { mutableStateOf(false) }
+    var showNewDm by remember { mutableStateOf(false) }
+    var socket by remember { mutableStateOf<Socket?>(null) }
+    var communityDialog by remember { mutableStateOf(false) }
+    var communityName by remember { mutableStateOf("") }
 
-    MaterialTheme(colorScheme = darkColorScheme(
-        primary = accent, secondary = Pink, background = Night,
-        surface = Panel, onBackground = White, onSurface = White
-    )) {
+    fun disconnect() { socket?.disconnect(); socket?.off(); socket = null }
+    fun connectSocket(authToken: String) {
+        disconnect()
+        try {
+            val opts = IO.Options.builder().setAuth(mapOf("token" to authToken)).setReconnection(true).build()
+            val s = IO.socket(server.trimEnd('/'), opts)
+            s.on(Socket.EVENT_CONNECT) {
+                val ch = activeChannel
+                if (ch.isNotBlank() && activeDm == null) s.emit("channel:join", ch)
+                activeDm?.let { s.emit("dm:join", it.id) }
+            }
+            s.on("message:new", Emitter.Listener { args ->
+                val event = args.firstOrNull() as? JSONObject ?: return@Listener
+                val msg = event.optJSONObject("message") ?: return@Listener
+                val channelId = event.optString("channelId")
+                val item = ChatMessage(msg.optString("id"), msg.optString("user"), msg.optString("text"), msg.optString("time"), msg.optString("userId"))
+                if (channelId == activeChannel && activeDm == null) {
+                    android.os.Handler(mainLooper).post { messages = (messages + item).takeLast(500) }
+                }
+            })
+            s.on("dm:new", Emitter.Listener { args ->
+                val event = args.firstOrNull() as? JSONObject ?: return@Listener
+                val msg = event.optJSONObject("message") ?: return@Listener
+                val id = event.optString("conversationId")
+                if (activeDm?.id == id) {
+                    val item = ChatMessage(msg.optString("id"), msg.optString("user"), msg.optString("text"), msg.optString("time"), msg.optString("userId"))
+                    android.os.Handler(mainLooper).post { messages = (messages + item).takeLast(500) }
+                }
+                android.os.Handler(mainLooper).post { scope.launch { runCatching { loadDms(server, authToken) }.onSuccess { dms = it } } }
+            })
+            s.on("message:error", Emitter.Listener { args ->
+                val err = (args.firstOrNull() as? JSONObject)?.optString("error") ?: "Не удалось отправить сообщение"
+                android.os.Handler(mainLooper).post { notice = err }
+            })
+            s.on(Socket.EVENT_CONNECT_ERROR) { args ->
+                android.os.Handler(mainLooper).post { notice = "Не удалось подключиться к серверу сообщений. Проверь адрес сервера." }
+            }
+            s.connect()
+            socket = s
+        } catch (e: Exception) { notice = "Ошибка подключения: ${e.message ?: "unknown"}" }
+    }
+
+    suspend fun loadDms(base: String, authToken: String): List<DirectChat> {
+        val arr = requestArray(base, "/api/dms", authToken)
+        return (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i); val other = o.optJSONObject("other") ?: JSONObject()
+            DirectChat(o.optString("id"), other.optString("username"), other.optString("displayName"), o.optString("lastMessage"))
+        }
+    }
+
+    suspend fun refreshChannel(channel: String, authToken: String) {
+        val arr = requestArray(server, "/api/messages/${java.net.URLEncoder.encode(channel, "UTF-8")}", authToken)
+        messages = (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i); ChatMessage(o.optString("id"), o.optString("user"), o.optString("text"), o.optString("time"), o.optString("userId"))
+        }
+    }
+
+    suspend fun refreshDm(chat: DirectChat, authToken: String) {
+        val arr = requestArray(server, "/api/dms/${chat.id}/messages", authToken)
+        messages = (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i); ChatMessage(o.optString("id"), o.optString("user"), o.optString("text"), o.optString("time"), o.optString("userId"))
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (token.isNotBlank()) {
+            loading = true
+            try {
+                val me = request(server, "/api/me", token = token)
+                currentName = me.getJSONObject("user").optString("displayName")
+                val boot = request(server, "/api/bootstrap", token = token)
+                val arr = boot.optJSONArray("communities") ?: JSONArray()
+                communities = (0 until arr.length()).map { i ->
+                    val c = arr.getJSONObject(i); val ch = c.optJSONArray("channels") ?: JSONArray()
+                    Community(c.optString("id"), c.optString("name"), (0 until ch.length()).map { j ->
+                        val v = ch.getJSONObject(j); Channel(v.optString("id"), v.optString("name"), v.optString("type"))
+                    })
+                }
+                communities.firstOrNull()?.let { c -> activeCommunity = c.id; c.channels.firstOrNull { it.type == "text" }?.let { activeChannel = it.id; activeChannelName = it.name; refreshChannel(it.id, token) } }
+                dms = loadDms(server, token)
+                connectSocket(token)
+            } catch (e: Exception) {
+                token = ""; prefs.edit().remove("token").apply()
+                notice = "Не удалось восстановить сессию: ${e.message ?: "сервер недоступен"}"
+            } finally { loading = false }
+        }
+    }
+
+    MaterialTheme(colorScheme = darkColorScheme(primary = Purple, secondary = Color(0xFFFF73D1), background = Night, surface = Panel, onBackground = White, onSurface = White)) {
         Surface(Modifier.fillMaxSize(), color = Night) {
-            Column(Modifier.fillMaxSize()) {
-                if (selectedChat != null) {
-                    ChatScreen(selectedChat!!, accent, onBack = { selectedChat = null })
-                } else {
-                    Header(tab)
-                    when (tab) {
-                        Tab.Chats -> ChatsScreen(chats, accent) { selectedChat = it }
-                        Tab.Calls -> PlaceholderScreen("Звонки", "Голосовые и видеозвонки появятся на следующем этапе.", Icons.Default.Call)
-                        Tab.Communities -> CommunitiesScreen(accent)
-                        Tab.Alerts -> PlaceholderScreen("Уведомления", "Здесь будут упоминания, ответы и события серверов.", Icons.Default.Notifications)
-                        Tab.Settings -> SettingsScreen(
-                            accent = accent,
-                            onAccent = { accent = it },
-                            animations = animations,
-                            onAnimations = { animations = it },
-                            transparency = transparency,
-                            onTransparency = { transparency = it }
-                        )
+            if (token.isBlank()) {
+                Column(Modifier.fillMaxSize().padding(22.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.DarkMode, null, tint = Purple, modifier = Modifier.size(42.dp))
+                    Text("LUNEX", fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 4.sp)
+                    Text("Реальные чаты, аккаунт и история на сервере", color = Muted, fontSize = 12.sp)
+                    Spacer(Modifier.height(22.dp))
+                    OutlinedTextField(value = server, onValueChange = { server = it }, label = { Text("Адрес сервера") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = username, onValueChange = { username = it }, label = { Text("Логин") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    if (register) OutlinedTextField(value = displayName, onValueChange = { displayName = it }, label = { Text("Отображаемое имя") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Пароль (не менее 10 символов)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(12.dp))
+                    Button(onClick = {
+                        scope.launch {
+                            loading = true; notice = ""
+                            try {
+                                val base = server.trim().trimEnd('/')
+                                require(base.startsWith("https://") || base.startsWith("http://")) { "Укажи адрес сервера с https:// или http://" }
+                                prefs.edit().putString("server", base).apply()
+                                val payload = JSONObject().put("username", username.trim())
+                                    .put("password", password)
+                                if (register) payload.put("displayName", displayName.trim())
+                                val response = request(base, "/api/auth/${if (register) "register" else "login"}", "POST", body = payload)
+                                token = response.getString("token"); prefs.edit().putString("token", token).apply()
+                                currentName = response.getJSONObject("user").optString("displayName")
+                                val boot = request(base, "/api/bootstrap", token = token)
+                                val arr = boot.optJSONArray("communities") ?: JSONArray()
+                                communities = (0 until arr.length()).map { i ->
+                                    val c = arr.getJSONObject(i); val ch = c.optJSONArray("channels") ?: JSONArray()
+                                    Community(c.optString("id"), c.optString("name"), (0 until ch.length()).map { j ->
+                                        val v = ch.getJSONObject(j); Channel(v.optString("id"), v.optString("name"), v.optString("type"))
+                                    })
+                                }
+                                communities.firstOrNull()?.let { c -> activeCommunity = c.id; c.channels.firstOrNull { it.type == "text" }?.let { activeChannel = it.id; activeChannelName = it.name; refreshChannel(it.id, token) } }
+                                dms = loadDms(base, token)
+                                connectSocket(token); password = ""
+                            } catch (e: Exception) { notice = e.message ?: "Сервер недоступен" }
+                            finally { loading = false }
+                        }
+                    }, enabled = !loading, modifier = Modifier.fillMaxWidth()) {
+                        if (loading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp) else Text(if (register) "Создать аккаунт" else "Войти")
                     }
-                    Spacer(Modifier.weight(1f))
-                    NavigationBar(containerColor = Panel) {
-                        Tab.values().forEach { item ->
-                            NavigationBarItem(
-                                selected = tab == item,
-                                onClick = { tab = item },
-                                icon = {
-                                    Icon(when (item) {
-                                        Tab.Chats -> Icons.Default.Chat
-                                        Tab.Calls -> Icons.Default.Call
-                                        Tab.Communities -> Icons.Default.Groups
-                                        Tab.Alerts -> Icons.Default.Notifications
-                                        Tab.Settings -> Icons.Default.Tune
-                                    }, contentDescription = item.label)
-                                },
-                                label = { Text(item.label, fontSize = 10.sp) },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = accent,
-                                    selectedTextColor = accent,
-                                    indicatorColor = Panel2,
-                                    unselectedIconColor = Muted,
-                                    unselectedTextColor = Muted
-                                )
-                            )
+                    TextButton(onClick = { register = !register; notice = "" }) { Text(if (register) "Уже есть аккаунт? Войти" else "Нет аккаунта? Создать") }
+                    if (notice.isNotBlank()) Text(notice, color = Color(0xFFFF8D9B), fontSize = 12.sp)
+                    Text("Регистрация: логин 3–24 символа (a–z, цифры, _), пароль от 10 символов.", color = Muted, fontSize = 11.sp)
+                }
+            } else {
+                Column(Modifier.fillMaxSize()) {
+                    Row(Modifier.fillMaxWidth().background(Panel).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("LUNEX", fontSize = 19.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
+                            Text("Вошли как $currentName", color = Muted, fontSize = 12.sp)
+                        }
+                        IconButton(onClick = { scope.launch {
+                            loading = true
+                            try {
+                                val boot = request(server, "/api/bootstrap", token = token)
+                                val arr = boot.optJSONArray("communities") ?: JSONArray()
+                                communities = (0 until arr.length()).map { i ->
+                                    val c = arr.getJSONObject(i); val ch = c.optJSONArray("channels") ?: JSONArray()
+                                    Community(c.optString("id"), c.optString("name"), (0 until ch.length()).map { j -> val v=ch.getJSONObject(j); Channel(v.optString("id"),v.optString("name"),v.optString("type")) })
+                                }
+                                dms = loadDms(server, token)
+                                if (activeDm != null) refreshDm(activeDm!!, token) else if (activeChannel.isNotBlank()) refreshChannel(activeChannel, token)
+                            } catch(e:Exception) { notice=e.message ?: "Ошибка обновления" } finally { loading=false }
+                        } }) { Icon(Icons.Default.Refresh, "Обновить", tint = Purple) }
+                        TextButton(onClick = { scope.launch { runCatching { request(server, "/api/auth/logout", "POST", token) }; disconnect(); token=""; prefs.edit().remove("token").apply(); messages= emptyList(); dms= emptyList(); activeDm=null } }) { Text("Выйти") }
+                    }
+                    if (notice.isNotBlank()) Text(notice, color = Color(0xFFFF8D9B), modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp), fontSize = 12.sp)
+                    LazyRow(contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(communities) { c ->
+                            FilterChip(selected = activeCommunity == c.id && activeDm == null, onClick = {
+                                activeCommunity = c.id; activeDm = null
+                                val ch = c.channels.firstOrNull { it.type == "text" }
+                                if (ch != null) { activeChannel = ch.id; activeChannelName = ch.name; messages = emptyList(); socket?.emit("channel:join", ch.id); scope.launch { runCatching { refreshChannel(ch.id, token) }.onFailure { notice = it.message ?: "Ошибка загрузки" } } }
+                            }, label = { Text(c.name) })
                         }
                     }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun Header(tab: Tab) {
-    Row(
-        Modifier.fillMaxWidth().background(Panel).padding(horizontal = 18.dp, vertical = 16.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            Modifier.size(38.dp).clip(RoundedCornerShape(13.dp)).background(Panel2),
-            contentAlignment = Alignment.Center
-        ) { Icon(Icons.Default.DarkMode, null, tint = Purple) }
-        Spacer(Modifier.width(11.dp))
-        Column(Modifier.weight(1f)) {
-            Text("LUNEX", fontWeight = FontWeight.Black, letterSpacing = 2.sp, fontSize = 18.sp)
-            Text(tab.label, color = Muted, fontSize = 12.sp)
-        }
-        IconButton(onClick = {}) { Icon(Icons.Default.Search, "Поиск", tint = Muted) }
-        IconButton(onClick = {}) { Icon(Icons.Default.Add, "Создать", tint = Purple) }
-    }
-}
-
-@Composable
-private fun ChatsScreen(chats: List<Chat>, accent: Color, onChat: (Chat) -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(16.dp)) {
-        Text("Твои разговоры", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-        Text("Личные чаты и группы в одном месте", color = Muted, fontSize = 13.sp)
-        Spacer(Modifier.height(18.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("Все", "Личные", "Группы", "Каналы").forEachIndexed { index, label ->
-                Surface(color = if (index == 0) accent.copy(alpha = .2f) else Panel, shape = CircleShape) {
-                    Text(label, Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                        color = if (index == 0) accent else Muted, fontSize = 12.sp)
-                }
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-            items(chats) { chat ->
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Panel)
-                        .clickable { onChat(chat) }.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Avatar(chat.avatar, accent, 48)
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(chat.name, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(4.dp))
-                        Text(chat.message, color = Muted, fontSize = 12.sp, maxLines = 1)
-                    }
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text(chat.time, color = Muted, fontSize = 10.sp)
-                        if (chat.unread > 0) {
-                            Spacer(Modifier.height(6.dp))
-                            Box(Modifier.clip(CircleShape).background(accent).padding(horizontal = 7.dp, vertical = 3.dp)) {
-                                Text(chat.unread.toString(), color = Night, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    val community = communities.firstOrNull { it.id == activeCommunity }
+                    if (community != null && activeDm == null) {
+                        LazyRow(contentPadding = PaddingValues(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(community.channels.filter { it.type == "text" }) { ch ->
+                                AssistChip(onClick = { activeChannel = ch.id; activeChannelName = ch.name; activeDm = null; messages = emptyList(); socket?.emit("channel:join", ch.id); scope.launch { runCatching { refreshChannel(ch.id, token) }.onFailure { notice = it.message ?: "Ошибка загрузки" } } }, label = { Text("# ${ch.name}") })
                             }
                         }
                     }
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { activeDm = null; showNewDm = false; messages = emptyList(); community?.channels?.firstOrNull { it.type == "text" }?.let { activeChannel=it.id; activeChannelName=it.name; socket?.emit("channel:join",it.id); scope.launch { runCatching { refreshChannel(it.id,token) } } } }) { Text("Каналы") }
+                        OutlinedButton(onClick = { showNewDm = !showNewDm }) { Text("Личные сообщения") }
+                    }
+                    if (showNewDm) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(value = dmUsername, onValueChange = { dmUsername = it }, label = { Text("Логин собеседника") }, singleLine = true, modifier = Modifier.weight(1f))
+                            Button(onClick = { scope.launch {
+                                try {
+                                    val res = request(server, "/api/dms", "POST", token, JSONObject().put("username", dmUsername.trim().removePrefix("@")))
+                                    val other = res.optJSONObject("other") ?: JSONObject()
+                                    val chat = DirectChat(res.optString("id"), other.optString("username"), other.optString("displayName"), res.optString("lastMessage"))
+                                    dms = loadDms(server, token).let { listOf(chat) + it.filter { d -> d.id != chat.id } }
+                                    activeDm = chat; activeChannel = ""; messages = emptyList(); socket?.emit("dm:join", chat.id); refreshDm(chat, token); dmUsername = ""; showNewDm = false
+                                } catch(e:Exception) { notice=e.message ?: "Не удалось создать чат" }
+                            } }) { Text("Открыть") }
+                        }
+                        LazyRow(contentPadding = PaddingValues(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(dms) { d -> AssistChip(onClick = { activeDm=d; activeChannel=""; messages=emptyList(); socket?.emit("dm:join", d.id); scope.launch { runCatching { refreshDm(d,token) }.onFailure { notice=it.message ?: "Ошибка загрузки" } } }, label = { Text(d.displayName.ifBlank { d.username }) }) }
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth().background(Panel2).padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(activeDm?.displayName ?: "# $activeChannelName", fontWeight = FontWeight.Bold)
+                            Text(if (activeDm != null) "@${activeDm!!.username}" else "История загружается с сервера", color = Muted, fontSize = 11.sp)
+                        }
+                    }
+                    LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(messages, key = { it.id }) { msg ->
+                            val own = msg.user == currentName
+                            Column(Modifier.fillMaxWidth(), horizontalAlignment = if (own) Alignment.End else Alignment.Start) {
+                                Text(msg.user, color = if (own) Purple else Color(0xFF79D8E8), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                Surface(color = if (own) Purple.copy(alpha = .22f) else Panel, shape = RoundedCornerShape(16.dp)) {
+                                    Text(msg.text, Modifier.padding(horizontal = 13.dp, vertical = 9.dp), color = White)
+                                }
+                                Text(msg.time.replace("T", " ").take(16), color = Muted, fontSize = 9.sp)
+                            }
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth().background(Panel).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(value = draft, onValueChange = { draft = it }, modifier = Modifier.weight(1f), placeholder = { Text("Сообщение…") }, singleLine = true)
+                        IconButton(onClick = {
+                            val text = draft.trim()
+                            if (text.isNotEmpty()) {
+                                val s = socket
+                                if (s == null || !s.connected()) notice = "Нет соединения с сервером"
+                                else if (activeDm != null) s.emit("dm:send", JSONObject().put("conversationId", activeDm!!.id).put("text", text))
+                                else if (activeChannel.isNotBlank()) s.emit("message:send", JSONObject().put("channelId", activeChannel).put("text", text))
+                                draft = ""
+                            }
+                        }) { Icon(Icons.Default.Send, "Отправить", tint = Purple) }
+                    }
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun ChatScreen(chat: Chat, accent: Color, onBack: () -> Unit) {
-    var message by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().background(Panel).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Назад") }
-            Avatar(chat.avatar, accent, 38)
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(chat.name, fontWeight = FontWeight.Bold)
-                Text("демо-переписка", color = Muted, fontSize = 11.sp)
-            }
-            IconButton(onClick = {}) { Icon(Icons.Default.Call, "Звонок", tint = accent) }
-            IconButton(onClick = {}) { Icon(Icons.Default.VideoCall, "Видео", tint = accent) }
-        }
-        Column(Modifier.weight(1f).fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Сегодня", color = Muted, fontSize = 11.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
-            MessageBubble("Привет! Добро пожаловать в Lunex 🌙", false, accent)
-            MessageBubble("Здесь можно будет настроить фон именно этого чата.", true, accent)
-            MessageBubble("И цвета, шрифты, прозрачность и анимации — тоже!", false, accent)
-        }
-        Row(Modifier.fillMaxWidth().background(Panel).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = {}) { Icon(Icons.Default.AddCircle, "Вложение", tint = accent) }
-            OutlinedTextField(
-                value = message, onValueChange = { message = it },
-                modifier = Modifier.weight(1f), placeholder = { Text("Сообщение…", color = Muted) },
-                shape = RoundedCornerShape(22.dp), singleLine = true
-            )
-            IconButton(onClick = { message = "" }) { Icon(Icons.Default.Send, "Отправить", tint = accent) }
-        }
-    }
-}
-
-@Composable
-private fun MessageBubble(text: String, own: Boolean, accent: Color) {
-    Surface(
-        modifier = Modifier.widthIn(max = 300.dp).alignIf(own),
-        color = if (own) accent.copy(alpha = .23f) else Panel,
-        shape = RoundedCornerShape(18.dp)
-    ) { Text(text, Modifier.padding(13.dp), color = White, fontSize = 14.sp) }
-}
-
-private fun Modifier.alignIf(own: Boolean): Modifier = this.then(
-    if (own) Modifier.fillMaxWidth().wrapContentWidth(Alignment.End)
-    else Modifier.fillMaxWidth().wrapContentWidth(Alignment.Start)
-)
-
-@Composable
-private fun CommunitiesScreen(accent: Color) {
-    Column(Modifier.fillMaxWidth().padding(16.dp)) {
-        Text("Сообщества", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-        Text("Серверы, каналы и люди по интересам", color = Muted, fontSize = 13.sp)
-        Spacer(Modifier.height(16.dp))
-        Button(onClick = {}, colors = ButtonDefaults.buttonColors(containerColor = accent), modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Создать сообщество")
-        }
-        Spacer(Modifier.height(12.dp))
-        listOf("The Void" to "Игры · аниме · общение", "Anime Paradise" to "Аниме и творчество", "Gaming Hub" to "Ищем команду", "Study & Work" to "Учёба и работа").forEachIndexed { i, pair ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 5.dp).clip(RoundedCornerShape(16.dp)).background(Panel).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Avatar(pair.first.take(1), listOf(accent, Pink, Color(0xFF66D9E8), Color(0xFF8DDB9B))[i], 46)
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(pair.first, fontWeight = FontWeight.SemiBold)
-                    Text(pair.second, color = Muted, fontSize = 12.sp)
-                }
-                Icon(Icons.Default.ChevronRight, null, tint = Muted)
-            }
-        }
-    }
-}
-
-@Composable
-private fun SettingsScreen(
-    accent: Color, onAccent: (Color) -> Unit,
-    animations: Boolean, onAnimations: (Boolean) -> Unit,
-    transparency: Float, onTransparency: (Float) -> Unit
-) {
-    Column(Modifier.fillMaxWidth().padding(16.dp)) {
-        Text("Настрой Lunex", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-        Text("Твой интерфейс — твои правила", color = Muted, fontSize = 13.sp)
-        Spacer(Modifier.height(16.dp))
-        Text("Цвет акцента", fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            listOf(Purple, Pink, Color(0xFF58C7FF), Color(0xFF6DE3A5), Color(0xFFFFB86B), Color(0xFFFF6B7A)).forEach { color ->
-                Box(Modifier.size(36.dp).clip(CircleShape).background(color)
-                    .clickable { onAccent(color) }, contentAlignment = Alignment.Center) {
-                    if (accent == color) Icon(Icons.Default.Check, null, tint = Night)
-                }
-            }
-        }
-        Spacer(Modifier.height(20.dp))
-        Surface(color = Panel, shape = RoundedCornerShape(18.dp)) {
-            Column(Modifier.padding(16.dp)) {
-                Text("Прозрачность панелей", fontWeight = FontWeight.SemiBold)
-                Slider(value = transparency, onValueChange = onTransparency, valueRange = .25f..1f)
-                Text("${(transparency * 100).toInt()}%", color = Muted, fontSize = 12.sp)
-            }
-        }
-        Spacer(Modifier.height(10.dp))
-        Surface(color = Panel, shape = RoundedCornerShape(18.dp)) {
-            Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Анимации интерфейса", fontWeight = FontWeight.SemiBold)
-                    Text("Эффекты переходов и появления", color = Muted, fontSize = 12.sp)
-                }
-                Switch(checked = animations, onCheckedChange = onAnimations)
-            }
-        }
-        Spacer(Modifier.height(10.dp))
-        listOf("Фон и обои" to Icons.Default.Wallpaper, "Шрифты и размер текста" to Icons.Default.TextFields,
-            "Форма сообщений" to Icons.Default.ChatBubble, "Уведомления" to Icons.Default.Notifications,
-            "Импорт и экспорт темы" to Icons.Default.Share).forEach { item ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 5.dp).clip(RoundedCornerShape(14.dp)).background(Panel).clickable { }.padding(15.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                Icon(item.second, null, tint = accent)
-                Spacer(Modifier.width(12.dp))
-                Text(item.first, Modifier.weight(1f))
-                Icon(Icons.Default.ChevronRight, null, tint = Muted)
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-        Text("Демо-настройки пока действуют только в памяти и сбрасываются после перезапуска.", color = Muted, fontSize = 11.sp)
-    }
-}
-
-@Composable
-private fun PlaceholderScreen(title: String, subtitle: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
-    Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Spacer(Modifier.height(70.dp))
-        Icon(icon, null, tint = Purple, modifier = Modifier.size(56.dp))
-        Spacer(Modifier.height(16.dp))
-        Text(title, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(8.dp))
-        Text(subtitle, color = Muted, fontSize = 14.sp)
-        Spacer(Modifier.height(18.dp))
-        Text("Раздел запланирован", color = Purple, fontSize = 12.sp)
-    }
-}
-
-@Composable
-private fun Avatar(label: String, color: Color, size: Int) {
-    Box(Modifier.size(size.dp).clip(CircleShape).background(color.copy(alpha = .22f)),
-        contentAlignment = Alignment.Center) {
-        Text(label.take(1), color = color, fontWeight = FontWeight.Bold, fontSize = (size / 2.6).sp)
     }
 }
