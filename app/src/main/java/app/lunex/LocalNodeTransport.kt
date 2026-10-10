@@ -125,7 +125,12 @@ internal class LocalNodeTransport(
         val array = response.optJSONArray("messages") ?: return
         for (i in 0 until array.length()) {
             val message = LocalNodeMessage.fromJson(array.getJSONObject(i))
-            if (store.addMessage(message)) main.post { onMessage(message) }
+            // Sync is also a propagation path: a returning/offline node can bring
+            // older messages back into the mesh. Relay only newly inserted IDs.
+            if (store.addMessage(message)) {
+                main.post { onMessage(message) }
+                io.execute { relayToPeers(message, token, peer.host) }
+            }
         }
     }
 
