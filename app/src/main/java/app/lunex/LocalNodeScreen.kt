@@ -42,7 +42,6 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
     var selected by remember { mutableStateOf<LocalRoom?>(null) }
     var invite by remember { mutableStateOf("") }
     var inviteToJoin by remember { mutableStateOf("") }
-    var peerAddress by remember { mutableStateOf("") }
     var peerEndpoint by remember { mutableStateOf("") }
     var chatDraft by remember { mutableStateOf("") }
     var peers by remember { mutableStateOf(emptyList<LanPeer>()) }
@@ -88,24 +87,6 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
             Text("Вошли как " + activeName, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             Text("Узлы рядом или подключённые вручную: ${peers.size}", color = Color(0xFFAAA0BC), fontSize = 12.sp)
             peers.forEach { peer -> Text("• ${peer.name} · ${peer.host.hostAddress}:${peer.port}", color = Color(0xFFAAA0BC), fontSize = 12.sp) }
-            OutlinedTextField(
-                value = peerAddress,
-                onValueChange = { peerAddress = it },
-                label = { Text("Адрес другого узла: IP:порт") },
-                placeholder = { Text("192.168.1.20:45873 или [IPv6]:45873") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Button(
-                onClick = {
-                    transport.connectManually(peerAddress) { ok, message ->
-                        status = message
-                        if (ok) peerAddress = ""
-                    }
-                },
-                enabled = peerAddress.isNotBlank(),
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("Подключить узел по адресу") }
             OutlinedTextField(peerEndpoint, { peerEndpoint = it }, label = { Text("Адрес узла через интернет (IP:порт)") }, supportingText = { Text("Для прямого подключения узел должен быть доступен извне; может понадобиться проброс порта.") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Button(onClick = {
                 try {
