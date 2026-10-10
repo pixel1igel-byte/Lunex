@@ -27,8 +27,8 @@ internal data class StoredMessage(
  * Durable local message database. Outgoing messages are retained until acknowledged;
  * delivered messages are deduplicated by server message ID and remain readable offline.
  */
-internal class OfflineOutbox(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, "lunex-local.db", null, 2) {
+internal class OfflineOutbox(context: Context, databaseName: String = "lunex-local.db") :
+    SQLiteOpenHelper(context.applicationContext, databaseName, null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         createOutbox(db)
         createMessages(db)
