@@ -9,6 +9,9 @@ on:
       - '*.gradle.kts'
       - 'gradle.properties'
       - '.github/workflows/build-apk.yml'
+concurrency:
+  group: lunex-apk-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
