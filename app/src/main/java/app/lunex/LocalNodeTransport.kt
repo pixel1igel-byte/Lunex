@@ -17,6 +17,8 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
 private const val LUNEX_NODE_PORT = 45873
+private const val MAX_REQUEST_FRAME_CHARS = 65_536
+private const val MAX_RESPONSE_FRAME_CHARS = 16_777_216
 
 internal data class LanPeer(val name: String, val host: InetAddress, val port: Int)
 
@@ -181,7 +183,7 @@ internal class LocalNodeTransport(
     private fun handle(client: Socket) {
         client.use { socket ->
             socket.soTimeout = 10000
-            val line = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8)).readLine() ?: return
+            val line = readBoundedLine(BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8)), MAX_REQUEST_FRAME_CHARS) ?: return
             val request = JSONObject(line)
             val response = try {
                 when (request.optString("op")) {
@@ -301,12 +303,23 @@ internal class LocalNodeTransport(
         return host + ":" + peer.port
     }
 
+    private fun readBoundedLine(reader: BufferedReader, maxChars: Int): String? {
+        val line = StringBuilder()
+        while (true) {
+            val value = reader.read()
+            if (value == -1) return if (line.length == 0) null else line.toString().removeSuffix("\\r")
+            if (value == '\\n'.code) return line.toString().removeSuffix("\\r")
+            if (line.length >= maxChars) throw IllegalArgumentException("Слишком большой сетевой кадр.")
+            line.append(value.toChar())
+        }
+    }
+
     private fun request(peer: LanPeer, payload: JSONObject): JSONObject {
         Socket().use { socket ->
             socket.connect(java.net.InetSocketAddress(peer.host, peer.port), 4000)
             socket.soTimeout = 6000
             PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true).println(payload.toString())
-            val line = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8)).readLine()
+            val line = readBoundedLine(BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8)), MAX_RESPONSE_FRAME_CHARS)
                 ?: throw IllegalStateException("Узел не ответил")
             return JSONObject(line)
         }
