@@ -580,7 +580,8 @@ internal class LocalNodeTransport(
         Socket().use { socket ->
             socket.connect(java.net.InetSocketAddress(peer.host, peer.port), 4000)
             socket.soTimeout = 6000
-            val secret = payload.optString("token").ifBlank { payload.optString("authToken") }.ifBlank { null }
+            val tokenValue = payload.optString("token").ifBlank { payload.optString("authToken") }
+            val secret = tokenValue.takeIf { it.isNotBlank() }
             val wirePayload = secret?.let { encryptEnvelope(payload, it) } ?: payload
             PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true).println(wirePayload.toString())
             val line = readBoundedLine(BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8)), MAX_RESPONSE_FRAME_CHARS)
