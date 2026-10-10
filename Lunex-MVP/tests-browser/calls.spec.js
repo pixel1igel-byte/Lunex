@@ -39,6 +39,14 @@ test('two real browser peers complete audio and video WebRTC calls', async ({ br
     await openDirectChat(alice, 'e2e_bob');
     await openDirectChat(bob, 'e2e_alice');
 
+    // Verify the real notification path when the recipient is not viewing the DM.
+    await bob.getByTitle('Уведомления').click();
+    await alice.getByPlaceholder(/Сообщение для Bob E2E/).fill('Notification smoke test');
+    await alice.getByPlaceholder(/Сообщение для Bob E2E/).press('Enter');
+    await expect(bob.getByRole('button', { name: /Notification smoke test/ })).toBeVisible({ timeout: 10000 });
+    await bob.getByRole('button', { name: /Notification smoke test/ }).click();
+    await expect(bob.locator('.chat-header')).toContainText('Alice E2E');
+
     await alice.getByTitle('Голосовой звонок').click();
     await acceptCall(bob);
     await Promise.all([expectConnected(alice), expectConnected(bob)]);
