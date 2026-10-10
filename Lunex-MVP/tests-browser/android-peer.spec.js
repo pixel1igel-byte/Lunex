@@ -34,7 +34,6 @@ test('native Android peer exchanges live audio and video with a browser peer', a
   page.on('pageerror', error => errors.push(error.message));
   try {
     await register(page, 'e2e_bob', 'Bob E2E');
-    await openDirectChat(page, 'e2e_android');
     writeFileSync('/tmp/lunex-browser-ready', 'ready');
 
     await acceptCall(page);
