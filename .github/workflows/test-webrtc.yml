@@ -1,0 +1,29 @@
+name: WebRTC browser integration
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'Lunex-MVP/**'
+      - '.github/workflows/test-webrtc.yml'
+permissions:
+  contents: read
+jobs:
+  browser-calls:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Lunex-MVP
+    env:
+      CI: 'true'
+      LUNEX_DATA_FILE: /tmp/lunex-webrtc-e2e.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: Lunex-MVP/package.json
+      - run: npm install --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
