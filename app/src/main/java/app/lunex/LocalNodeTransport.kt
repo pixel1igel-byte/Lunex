@@ -195,6 +195,7 @@ internal class LocalNodeTransport(
                 main.post { onPeersChanged(peers()) }
                 store.joinRoom(roomId, roomName, token)
                 store.rememberPeerRoom(hello.getString("nodeId"), roomId)
+                main.post { onPeersChanged(peers()) }
                 sync(peer, roomId)
                 discoverRoomMesh(namedPeer, roomId)
                 syncAll()
@@ -824,6 +825,7 @@ internal class LocalNodeTransport(
                 }.getOrNull()
                 if (candidate?.optBoolean("ok") == true) {
                     store.rememberPeerRoom(currentId, roomId)
+                    main.post { onPeersChanged(peers()) }
                     response = candidate
                     break
                 }
@@ -937,8 +939,9 @@ internal class LocalNodeTransport(
     private fun rememberPeerRoomIfKnown(peerId: String, roomId: String, sourceAddress: InetAddress) {
         if (peerId.isBlank() || peerId == store.serverId()) return
         val known = peers[peerId] ?: return
-        if (known.host.address.contentEquals(sourceAddress.address)) {
+        if (known.host.address.contentEquals(sourceAddress.address) && !store.isPeerInRoom(peerId, roomId)) {
             store.rememberPeerRoom(peerId, roomId)
+            main.post { onPeersChanged(peers()) }
         }
     }
 
