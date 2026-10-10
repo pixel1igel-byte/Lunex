@@ -30,7 +30,7 @@ internal class LocalNodeTransport(
     private val app = context.applicationContext
     private val nsd = app.getSystemService(Context.NSD_SERVICE) as NsdManager
     private val main = Handler(Looper.getMainLooper())
-    private val io = Executors.newCachedThreadPool()
+    @Volatile private var io = Executors.newCachedThreadPool()
     private val peers = ConcurrentHashMap<String, LanPeer>()
     @Volatile private var running = false
     @Volatile private var server: ServerSocket? = null
@@ -39,8 +39,10 @@ internal class LocalNodeTransport(
     private var port = 0
     private val serviceType = "_lunexnode._tcp."
 
+    @Synchronized
     fun start() {
         if (running) return
+        if (io.isShutdown) io = Executors.newCachedThreadPool()
         running = true
         io.execute {
             try {
@@ -60,7 +62,9 @@ internal class LocalNodeTransport(
         main.post { onStatus("LAN-узел запущен. Поиск устройств в этой Wi-Fi сети…") }
     }
 
+    @Synchronized
     fun stop() {
+        if (!running) return
         running = false
         runCatching { discovery?.let { nsd.stopServiceDiscovery(it) } }
         runCatching { registration?.let { nsd.unregisterService(it) } }
