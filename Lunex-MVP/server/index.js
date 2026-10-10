@@ -24,7 +24,7 @@ const MAX_HISTORY = 500;
 const SESSION_DAYS = 30;
 const DATA = process.env.LUNEX_DATA_FILE || path.join(__dirname, 'data.json');
 const seed = {
-  users: [], sessions: [], communities: [
+  users: [], sessions: [], uploads: [], communities: [
     { id: 'void', name: 'The Void', description: 'Игры, аниме и общение', channels: [
       { id: 'general', name: 'общение', type: 'text' }, { id: 'memes', name: 'мемы', type: 'text' },
       { id: 'anime', name: 'аниме', type: 'text' }, { id: 'voice', name: 'Общий голосовой', type: 'voice' }
@@ -40,7 +40,7 @@ const seed = {
 function loadDb() {
   try {
     const parsed = JSON.parse(fs.readFileSync(DATA, 'utf8'));
-    return { ...structuredClone(seed), ...parsed, users: parsed.users || [], sessions: parsed.sessions || [], dms: parsed.dms || [] };
+    return { ...structuredClone(seed), ...parsed, users: parsed.users || [], sessions: parsed.sessions || [], uploads: parsed.uploads || [], dms: parsed.dms || [] };
   } catch {
     fs.mkdirSync(path.dirname(DATA), { recursive: true });
     fs.writeFileSync(DATA, JSON.stringify(seed, null, 2));
@@ -175,6 +175,44 @@ app.get('/api/dms/:id/messages', authHttp, (req, res) => {
   if (!conversation) return res.status(404).json({ error: 'Личный чат не найден.' });
   res.json(conversation.messages.slice(-MAX_HISTORY));
 });
+
+const uploadRoot = path.join(path.dirname(DATA), 'uploads');
+const MAX_UPLOAD_SIZE = 4 * 1024 * 1024;
+const allowedUploadTypes = new Set(['image/jpeg','image/png','image/gif','image/webp','application/pdf','text/plain']);
+app.post('/api/uploads', authHttp, express.raw({ type: 'application/octet-stream', limit: MAX_UPLOAD_SIZE }), (req, res) => {
+  const scope = String(req.query.scope || '');
+  const scopeId = String(req.query.id || '');
+  const name = String(req.query.name || 'attachment').replace(/[\\/\r\n\0]/g, '_').slice(0, 120);
+  const type = String(req.query.type || '').toLowerCase();
+  if (!['dm','channel'].includes(scope) || !scopeId || scopeId.length > 120) return res.status(400).json({ error: 'Некорректное место отправки файла.' });
+  if (!allowedUploadTypes.has(type)) return res.status(415).json({ error: 'Поддерживаются изображения, PDF и текстовые файлы.' });
+  if (!Buffer.isBuffer(req.body) || req.body.length < 1 || req.body.length > MAX_UPLOAD_SIZE) return res.status(400).json({ error: 'Файл пустой или превышает 4 МБ.' });
+  if (scope === 'dm' && !db.dms.some(d => d.id === scopeId && d.userIds.includes(req.user.id))) return res.status(404).json({ error: 'Личный чат не найден.' });
+  if (scope === 'channel' && !isValidChannelId(scopeId, db.communities)) return res.status(404).json({ error: 'Канал не найден.' });
+  const id = randomBytes(18).toString('hex');
+  fs.mkdirSync(uploadRoot, { recursive: true });
+  const filePath = path.join(uploadRoot, id);
+  fs.writeFileSync(filePath, req.body, { mode: 0o600, flag: 'wx' });
+  const attachment = { id, ownerId: req.user.id, name, type, size: req.body.length, scope, scopeId, filePath, createdAt: new Date().toISOString() };
+  db.uploads.push(attachment); saveDb();
+  res.status(201).json({ id, name, type, size: attachment.size });
+});
+app.get('/api/uploads/:id', authHttp, (req, res) => {
+  const attachment = db.uploads.find(item => item.id === req.params.id);
+  if (!attachment) return res.status(404).json({ error: 'Файл не найден.' });
+  const allowed = attachment.scope === 'dm'
+    ? db.dms.some(d => d.id === attachment.scopeId && d.userIds.includes(req.user.id))
+    : isValidChannelId(attachment.scopeId, db.communities);
+  if (!allowed) return res.status(403).json({ error: 'Нет доступа к этому файлу.' });
+  if (!fs.existsSync(attachment.filePath)) return res.status(410).json({ error: 'Файл больше не хранится на сервере.' });
+  res.setHeader('Content-Type', attachment.type);
+  res.setHeader('Content-Length', attachment.size);
+  res.setHeader('Content-Disposition', "attachment; filename*=UTF-8''" + encodeURIComponent(attachment.name));
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'private, no-store');
+  fs.createReadStream(attachment.filePath).pipe(res);
+});
+
 app.get('/api/messages/:channelId', authHttp, (req, res) => {
   if (!isValidChannelId(req.params.channelId, db.communities)) return res.status(404).json({ error: 'Канал не найден.' });
   res.json(db.messages[req.params.channelId] || []);
