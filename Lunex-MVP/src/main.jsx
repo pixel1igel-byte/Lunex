@@ -48,6 +48,13 @@ function App() {
   const [notice, setNotice] = useState('');
   const [newCommunity, setNewCommunity] = useState(false);
   const [newChannel, setNewChannel] = useState(false);
+  const [joinCommunityOpen, setJoinCommunityOpen] = useState(false);
+  const [inviteCode, setInviteCode] = useState('');
+  const [inviteResult, setInviteResult] = useState(null);
+  const [membersOpen, setMembersOpen] = useState(false);
+  const [communityMembers, setCommunityMembers] = useState([]);
+  const [privateChannel, setPrivateChannel] = useState(false);
+  const [channelType, setChannelType] = useState('text');
   const [newDm, setNewDm] = useState(false);
   const [dmUsername, setDmUsername] = useState('');
   const [newName, setNewName] = useState('');
@@ -108,9 +115,15 @@ function App() {
       });
     }).catch(() => { if (!cancelled) { localStorage.removeItem('lunex-token'); setToken(''); setUser(''); setNotice('Сессия завершилась. Войди снова.'); } })
       .finally(() => { if (!cancelled) setAuthLoading(false); });
-    socket.on('communities:changed', setCommunities);
-    socket.on('message:error', event => setNotice(event.error || 'Не удалось отправить сообщение.'));
-    return () => { cancelled = true; socket.off('communities:changed', setCommunities); socket.off('message:error'); };
+    const onCommunityChanged = () => {
+      fetch(`${API}/api/bootstrap`, { headers }).then(r => r.ok ? r.json() : null).then(data => {
+        if (data && !cancelled) setCommunities(data.communities || []);
+      }).catch(() => {});
+    };
+    socket.on('communities:changed', onCommunityChanged);
+    const onMessageError = event => setNotice(event.error || 'Не удалось отправить сообщение.');
+    socket.on('message:error', onMessageError);
+    return () => { cancelled = true; socket.off('communities:changed', onCommunityChanged); socket.off('message:error', onMessageError); };
   }, [token]);
 
   useEffect(() => {
@@ -281,11 +294,64 @@ function App() {
   }
   async function createChannel() {
     const name = newName.trim(); if (!name || !community) return;
-    try { const res = await fetch(`${API}/api/communities/${community.id}/channels`, { method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`}, body:JSON.stringify({name}) }); const data = await res.json().catch(()=>({}));
+    try { const res = await fetch(`${API}/api/communities/${community.id}/channels`, { method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`}, body:JSON.stringify({name, type:channelType, private:privateChannel}) }); const data = await res.json().catch(()=>({}));
       if (!res.ok) { setNotice(data.error || 'Не удалось создать канал.'); return; }
       const ch = data; setCommunities(prev=>prev.map(c=>c.id===community.id?{...c,channels:[...c.channels.filter(item=>item.id!==ch.id),ch]}:c)); setActiveChannel(ch.id); setNewChannel(false); setNewName(''); setNotice('Канал создан.');
     } catch { setNotice('Сервер недоступен. Канал не создан.'); }
   }
+
+  async function createCommunityInvite() {
+    if (!community) return;
+    try {
+      const res = await fetch(`${API}/api/communities/${community.id}/invites`, { method:'POST', headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'}, body:JSON.stringify({maxUses:0}) });
+      const data = await res.json().catch(()=>({}));
+      if (!res.ok) { setNotice(data.error || 'Не удалось создать приглашение.'); return; }
+      setInviteResult(data); setNotice('Приглашение создано. Передай код человеку, которого хочешь пригласить.');
+    } catch { setNotice('Сервер недоступен.'); }
+  }
+  async function joinCommunityByInvite() {
+    const code = inviteCode.trim();
+    if (!code) return;
+    try {
+      const res = await fetch(`${API}/api/invites/${encodeURIComponent(code)}/join`, {method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:'{}'});
+      const data = await res.json().catch(()=>({}));
+      if (!res.ok) { setNotice(data.error || 'Не удалось присоединиться.'); return; }
+      const joined = data.community;
+      setCommunities(prev => [...prev.filter(item=>item.id!==joined.id), joined]);
+      setActiveCommunity(joined.id); setActiveChannel(joined.channels?.[0]?.id || ''); setDm(null);
+      setJoinCommunityOpen(false); setInviteCode(''); setTab('chats'); setNotice(`Ты присоединился к «${joined.name}».`);
+    } catch { setNotice('Сервер недоступен.'); }
+  }
+  async function loadCommunityMembers() {
+    if (!community) return;
+    try {
+      const res = await fetch(`${API}/api/communities/${community.id}/members`, {headers:{Authorization:`Bearer ${token}`}});
+      const data = await res.json().catch(()=>[]);
+      if (!res.ok) { setNotice(data.error || 'Не удалось загрузить участников.'); return; }
+      setCommunityMembers(data); setMembersOpen(true);
+    } catch { setNotice('Сервер недоступен.'); }
+  }
+  async function updateMemberRole(member, roleId) {
+    if (!community) return;
+    try {
+      const res = await fetch(`${API}/api/communities/${community.id}/members/${member.user.id}`, {method:'PATCH',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({roleId})});
+      const data = await res.json().catch(()=>({}));
+      if (!res.ok) { setNotice(data.error || 'Не удалось изменить роль.'); return; }
+      setCommunityMembers(prev=>prev.map(item=>item.user.id===member.user.id?{...item,roleId:data.roleId}:item));
+      setNotice('Роль участника изменена.');
+    } catch { setNotice('Сервер недоступен.'); }
+  }
+  async function removeCommunityMember(member) {
+    if (!community) return;
+    try {
+      const res = await fetch(`${API}/api/communities/${community.id}/members/${member.user.id}`, {method:'DELETE',headers:{Authorization:`Bearer ${token}`}});
+      const data = await res.json().catch(()=>({}));
+      if (!res.ok) { setNotice(data.error || 'Не удалось удалить участника.'); return; }
+      setCommunityMembers(prev=>prev.filter(item=>item.user.id!==member.user.id));
+      setNotice('Участник удалён из сообщества.');
+    } catch { setNotice('Сервер недоступен.'); }
+  }
+
   async function login(e) {
     e.preventDefault();
     const payload = authMode === 'register'
@@ -350,9 +416,10 @@ function App() {
         {visibleDms.map(c=><button key={c.id} className={`dm-row ${dm?.id===c.id?'selected':''}`} onClick={()=>{setDm(c);setActiveChannel('');setMobileNav(false)}}><div className="avatar">{(c.other?.displayName || '?').slice(0,1).toUpperCase()}</div><div className="row-main"><strong>{c.other?.displayName || 'Пользователь'}</strong><span>{c.lastMessage || `@${c.other?.username || ''}`}</span></div><small>{c.time ? new Date(c.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : ''}</small></button>)}
         <div className="section-heading"><span>СООБЩЕСТВА</span><button className="tiny-icon" onClick={()=>setNewCommunity(true)}><Plus size={15}/></button></div>
         {visibleCommunities.map(c=><div key={c.id} className="community-block"><button className={`community-title ${activeCommunity===c.id?'chosen':''}`} onClick={()=>setActiveCommunity(c.id)}><span className="community-icon">{c.name.slice(0,1).toUpperCase()}</span><span>{c.name}</span><ChevronDown size={14}/></button>{(activeCommunity===c.id || tab==='communities') && c.channels.map(ch=><button key={ch.id} className={`channel-row ${activeChannel===ch.id?'chosen':''}`} onClick={()=>selectChannel(c,ch)}>{ch.type==='voice'?<Volume2 size={15}/>:<Hash size={15}/>}<span>{ch.name}</span></button>)}</div>)}
-        {community && <button className="add-channel" onClick={()=>setNewChannel(true)}><Plus size={15}/> Добавить канал</button>}
+        {community && <><button className="add-channel" onClick={()=>setNewChannel(true)}><Plus size={15}/> Добавить канал</button>
+          {community.ownerId && <div className="community-tools"><button className="add-channel" onClick={createCommunityInvite}>Пригласить</button><button className="add-channel" onClick={loadCommunityMembers}>Участники</button></div>}</>}
       </>}
-      {tab === 'communities' && <div className="community-browser"><div className="section-label">ТВОИ СООБЩЕСТВА</div>{communities.map(c=><button className="browse-card" key={c.id} onClick={()=>{setActiveCommunity(c.id);setTab('chats')}}><div className="community-icon big">{c.name.slice(0,1)}</div><div><strong>{c.name}</strong><p>{c.description}</p><small>{c.channels.length} каналов</small></div></button>)}<button className="primary wide" onClick={()=>setNewCommunity(true)}><Plus size={16}/> Создать сообщество</button></div>}
+      {tab === 'communities' && <div className="community-browser"><div className="section-label">ТВОИ СООБЩЕСТВА</div>{communities.map(c=><button className="browse-card" key={c.id} onClick={()=>{setActiveCommunity(c.id);setTab('chats')}}><div className="community-icon big">{c.name.slice(0,1)}</div><div><strong>{c.name}</strong><p>{c.description}</p><small>{c.channels.length} каналов{c.memberCount == null ? '' : ` · ${c.memberCount} участников`} · {c.myRole || 'участник'}</small></div></button>)}<button className="primary wide" onClick={()=>setNewCommunity(true)}><Plus size={16}/> Создать сообщество</button><button className="secondary wide" onClick={()=>setJoinCommunityOpen(true)}>Присоединиться по приглашению</button></div>}
       {tab === 'calls' && <div className="empty-pane"><Phone/><h3>Звонки</h3><p>Выбери собеседника ниже, чтобы начать аудио- или видеозвонок.</p>{visibleDms.length===0 ? <small>Сначала создай личный чат.</small> : visibleDms.map(c=><div className="call-contact" key={c.id}><div className="avatar">{(c.other?.displayName||'?').slice(0,1).toUpperCase()}</div><div className="row-main"><strong>{c.other?.displayName||'Пользователь'}</strong><span>@{c.other?.username||''}</span></div><button className="icon-btn" title="Голосовой звонок" onClick={()=>{setDm(c);setActiveChannel('');setTab('chats');setNotice('Чат открыт. Нажми на трубку или камеру вверху, чтобы позвонить.')}}><Phone size={18}/></button><button className="icon-btn" title="Видеозвонок" onClick={()=>{setDm(c);setActiveChannel('');setTab('chats');setNotice('Чат открыт. Нажми на трубку или камеру вверху, чтобы позвонить.')}}><Video size={18}/></button></div>)}</div>}
       {tab === 'notifications' && <div className="empty-pane"><Bell/><h3>Уведомления</h3><p>Здесь будут упоминания и события сообществ.</p></div>}
       <footer className="profile-footer"><div className="avatar self">{user.slice(0,1).toUpperCase()}</div><div className="row-main"><strong>{user}</strong><span>Аккаунт Lunex</span></div><button className="icon-btn" title="Выйти" onClick={logout}><ArrowLeft size={18}/></button><button className="icon-btn" title="Настройки" onClick={()=>setSettingsOpen(true)}><Settings2 size={18}/></button></footer>
@@ -382,7 +449,10 @@ function App() {
       <footer><span>Настройки сохраняются в этом браузере.</span><button className="primary" onClick={()=>setSettingsOpen(false)}>Готово</button></footer>
     </section></div>}
 
-    {(newCommunity || newChannel || newDm) && <div className="settings-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget){setNewCommunity(false);setNewChannel(false);setNewDm(false)}}}><form className="small-modal" onSubmit={e=>{e.preventDefault();newDm?openDm(e):newCommunity?createCommunity():createChannel()}}><button type="button" className="icon-btn close-modal" onClick={()=>{setNewCommunity(false);setNewChannel(false);setNewDm(false)}}><X/></button><h2>{newDm?'Новый личный чат':newCommunity?'Создать сообщество':'Добавить канал'}</h2><p>{newDm?'Введи логин пользователя, который уже создал аккаунт.':newCommunity?'Отдельное пространство для друзей или интересов.':'Канал появится в выбранном сообществе.'}</p>{newDm ? <><input autoFocus value={dmUsername} onChange={e=>setDmUsername(e.target.value)} placeholder="Логин пользователя" maxLength="25"/><button type="button" className="primary wide" disabled={!dmUsername.trim()} onClick={openDm}>Открыть чат</button></> : <><input autoFocus value={newName} onChange={e=>setNewName(e.target.value)} placeholder={newCommunity?'Название сообщества':'Название канала'} maxLength="48"/><button className="primary wide" disabled={!newName.trim()}>Создать</button></>}</form></div>}
+    {inviteResult && <div className="settings-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setInviteResult(null)}}><section className="small-modal"><button type="button" className="icon-btn close-modal" onClick={()=>setInviteResult(null)}><X/></button><h2>Приглашение в сообщество</h2><p>Передай этот код человеку. Он сможет вступить, пока приглашение действительно.</p><div className="invite-code">{inviteResult.code}</div><button className="primary wide" onClick={()=>{setInviteCode(inviteResult.code);setInviteResult(null);setNotice('Код приглашения оставлен в форме присоединения.')}}>Готово</button></section></div>}
+    {joinCommunityOpen && <div className="settings-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setJoinCommunityOpen(false)}}><form className="small-modal" onSubmit={e=>{e.preventDefault();joinCommunityByInvite()}}><button type="button" className="icon-btn close-modal" onClick={()=>setJoinCommunityOpen(false)}><X/></button><h2>Присоединиться</h2><p>Введи код приглашения в сообщество Lunex.</p><input autoFocus value={inviteCode} onChange={e=>setInviteCode(e.target.value)} placeholder="Код приглашения" maxLength="100"/><button className="primary wide" disabled={!inviteCode.trim()}>Вступить</button></form></div>}
+    {membersOpen && <div className="settings-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setMembersOpen(false)}}><section className="small-modal members-modal"><button type="button" className="icon-btn close-modal" onClick={()=>setMembersOpen(false)}><X/></button><h2>Участники · {community?.name}</h2><p>Роли и удаление участников проверяются сервером.</p>{communityMembers.map(member=><div className="member-row" key={member.user.id}><div className="row-main"><strong>{member.user.displayName}</strong><span>@{member.user.username} · {member.roleId}</span></div>{member.roleId!=='owner' && community?.myRole==='owner' && <select aria-label={`Роль ${member.user.username}`} value={member.roleId} onChange={e=>updateMemberRole(member,e.target.value)}><option value="member">Участник</option><option value="admin">Администратор</option></select>}{member.roleId!=='owner' && <button className="secondary" onClick={()=>removeCommunityMember(member)}>Удалить</button>}</div>)}<button className="primary wide" onClick={()=>setMembersOpen(false)}>Готово</button></section></div>}
+    {(newCommunity || newChannel || newDm) && <div className="settings-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget){setNewCommunity(false);setNewChannel(false);setNewDm(false)}}}><form className="small-modal" onSubmit={e=>{e.preventDefault();newDm?openDm(e):newCommunity?createCommunity():createChannel()}}><button type="button" className="icon-btn close-modal" onClick={()=>{setNewCommunity(false);setNewChannel(false);setNewDm(false)}}><X/></button><h2>{newDm?'Новый личный чат':newCommunity?'Создать сообщество':'Добавить канал'}</h2><p>{newDm?'Введи логин пользователя, который уже создал аккаунт.':newCommunity?'Отдельное пространство для друзей или интересов.':'Канал появится в выбранном сообществе.'}</p>{newDm ? <><input autoFocus value={dmUsername} onChange={e=>setDmUsername(e.target.value)} placeholder="Логин пользователя" maxLength="25"/><button type="button" className="primary wide" disabled={!dmUsername.trim()} onClick={openDm}>Открыть чат</button></> : <><input autoFocus value={newName} onChange={e=>setNewName(e.target.value)} placeholder={newCommunity?'Название сообщества':'Название канала'} maxLength="48"/>{newChannel && <><label className="modal-option">Тип канала <select value={channelType} onChange={e=>setChannelType(e.target.value)}><option value="text">Текстовый</option><option value="voice">Голосовой (комната пока без аудиопередачи)</option></select></label><label className="modal-option"><input type="checkbox" checked={privateChannel} onChange={e=>setPrivateChannel(e.target.checked)}/> Приватный канал (владелец и администраторы)</label></>}<button className="primary wide" disabled={!newName.trim()}>Создать</button></>}</form></div>}
     {(callState !== 'idle' || incomingCall) && <div className="call-overlay"><section className="call-card"><header><div><span className="eyebrow">LUNEX CALL</span><h2>{incomingCall ? `Входящий ${incomingCall.mode === 'video' ? 'видеозвонок' : 'звонок'}` : callMode === 'video' ? 'Видеозвонок' : 'Голосовой звонок'}</h2><p>{incomingCall?.caller?.displayName || dm?.other?.displayName || 'Собеседник'} · {callState === 'calling' ? 'Вызов…' : callState === 'connecting' ? 'Подключаемся…' : callState === 'connected' ? 'Соединено' : 'Ожидание ответа'}</p></div></header><audio ref={remoteAudioRef} autoPlay />{(callMode === 'video' || incomingCall?.mode === 'video') && <div className="call-videos">{remoteStream && <video ref={remoteVideoRef} autoPlay playsInline className="remote-video"/>}{localStream && <video ref={localVideoRef} autoPlay playsInline muted className="local-video"/>}{!remoteStream && <div className="video-placeholder">Ожидание видео собеседника…</div>}</div>}<div className="call-actions">{incomingCall ? <><button className="primary" onClick={acceptCall}><PhoneIncoming size={18}/> Принять</button><button className="danger" onClick={()=>{socket.emit('call:reject',{callId:incomingCall.callId,conversationId:incomingCall.conversationId});setIncomingCall(null);setCallState('idle')}}><PhoneOff size={18}/> Отклонить</button></> : <>{callState==='connected' && <><button className={callMuted?'secondary active-toggle':'secondary'} onClick={()=>{const next=!callMuted;localStreamRef.current?.getAudioTracks().forEach(t=>t.enabled=!next);setCallMuted(next)}}><Mic size={18}/> {callMuted?'Включить микрофон':'Выключить микрофон'}</button>{callMode==='video' && <button className="secondary" onClick={()=>{const next=!cameraOff;localStreamRef.current?.getVideoTracks().forEach(t=>t.enabled=!next);setCameraOff(next)}}><Video size={18}/> {cameraOff?'Включить камеру':'Выключить камеру'}</button>}</>}<button className="danger" onClick={()=>closeCall(true)}><PhoneOff size={18}/> Завершить</button></>}</div><p className="call-note">Звонки используют WebRTC. Если сеть не позволяет прямое соединение, может потребоваться настроенный TURN-сервер.</p></section></div>}
     {notice && <div className="toast" role="status">{notice}<button onClick={()=>setNotice('')}><X size={15}/></button></div>}
   </div>;
