@@ -39,7 +39,7 @@ function App() {
   const [mobileNav, setMobileNav] = useState(false);
   const [chatSearch, setChatSearch] = useState('');
   const [emojiOpen, setEmojiOpen] = useState(false);
-  const [notifications, setNotifications] = useState(() => { try { return JSON.parse(localStorage.getItem('lunex-notifications') || '[]').slice(0,50); } catch { return []; } });
+  const [notifications, setNotifications] = useState(() => { try { return JSON.parse(localStorage.getItem('lunex-notifications:' + (localStorage.getItem('lunex-token') || 'guest')) || '[]').slice(0,50); } catch { return []; } });
   const [theme, setTheme] = useState(() => {
     try { return { ...DEFAULT_THEME, ...JSON.parse(localStorage.getItem('lunex-theme') || '{}') }; }
     catch { return DEFAULT_THEME; }
@@ -72,7 +72,7 @@ function App() {
   const remoteVideoRef = useRef(null);
   const remoteAudioRef = useRef(null);
 
-  useEffect(() => { try { localStorage.setItem('lunex-notifications', JSON.stringify(notifications.slice(0,50))); } catch {} }, [notifications]);
+  useEffect(() => { try { localStorage.setItem('lunex-notifications:' + (token || 'guest'), JSON.stringify(notifications.slice(0,50))); } catch {} }, [notifications]);
 
   useEffect(() => {
     const onDmNew = event => {
