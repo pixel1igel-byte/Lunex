@@ -259,17 +259,23 @@ private fun LunexApp() {
                 val msg = event.optJSONObject("message") ?: return@Listener
                 val channelId = event.optString("channelId")
                 val item = ChatMessage(msg.optString("id"), msg.optString("user"), msg.optString("text"), msg.optString("time"), msg.optString("userId"))
+                outbox.store(StoredMessage(item.id, "channel", channelId, item.user, item.userId, item.text, item.time))
                 if (channelId == activeChannelRef.get() && activeDmRef.get().isBlank()) {
-                    android.os.Handler(android.os.Looper.getMainLooper()).post { messages = (messages + item).takeLast(500) }
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        if (messages.none { it.id == item.id }) messages = (messages + item).takeLast(500)
+                    }
                 }
             })
             s.on("dm:new", Emitter.Listener { args ->
                 val event = args.firstOrNull() as? JSONObject ?: return@Listener
                 val msg = event.optJSONObject("message") ?: return@Listener
                 val id = event.optString("conversationId")
+                val item = ChatMessage(msg.optString("id"), msg.optString("user"), msg.optString("text"), msg.optString("time"), msg.optString("userId"))
+                outbox.store(StoredMessage(item.id, "dm", id, item.user, item.userId, item.text, item.time))
                 if (activeDmRef.get() == id) {
-                    val item = ChatMessage(msg.optString("id"), msg.optString("user"), msg.optString("text"), msg.optString("time"), msg.optString("userId"))
-                    android.os.Handler(android.os.Looper.getMainLooper()).post { messages = (messages + item).takeLast(500) }
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        if (messages.none { it.id == item.id }) messages = (messages + item).takeLast(500)
+                    }
                 }
                 android.os.Handler(android.os.Looper.getMainLooper()).post { scope.launch { runCatching { loadDms(server, authToken) }.onSuccess { dms = it } } }
             })
@@ -287,17 +293,33 @@ private fun LunexApp() {
 
 
     suspend fun refreshChannel(channel: String, authToken: String) {
-        val arr = requestArray(server, "/api/messages/${java.net.URLEncoder.encode(channel, "UTF-8")}", authToken)
-        messages = (0 until arr.length()).map { i ->
-            val o = arr.getJSONObject(i); ChatMessage(o.optString("id"), o.optString("user"), o.optString("text"), o.optString("time"), o.optString("userId"))
+        val arr = try {
+            requestArray(server, "/api/messages/${java.net.URLEncoder.encode(channel, "UTF-8")}", authToken)
+        } catch (_: Exception) {
+            messages = outbox.history("channel", channel).map { ChatMessage(it.id, it.user, it.text, it.time, it.userId) }
+            return
         }
+        val loaded = (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            ChatMessage(o.optString("id"), o.optString("user"), o.optString("text"), o.optString("time"), o.optString("userId"))
+        }
+        loaded.forEach { outbox.store(StoredMessage(it.id, "channel", channel, it.user, it.userId, it.text, it.time)) }
+        messages = loaded.ifEmpty { outbox.history("channel", channel).map { ChatMessage(it.id, it.user, it.text, it.time, it.userId) } }.takeLast(500)
     }
 
     suspend fun refreshDm(chat: DirectChat, authToken: String) {
-        val arr = requestArray(server, "/api/dms/${chat.id}/messages", authToken)
-        messages = (0 until arr.length()).map { i ->
-            val o = arr.getJSONObject(i); ChatMessage(o.optString("id"), o.optString("user"), o.optString("text"), o.optString("time"), o.optString("userId"))
+        val arr = try {
+            requestArray(server, "/api/dms/${chat.id}/messages", authToken)
+        } catch (_: Exception) {
+            messages = outbox.history("dm", chat.id).map { ChatMessage(it.id, it.user, it.text, it.time, it.userId) }
+            return
         }
+        val loaded = (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            ChatMessage(o.optString("id"), o.optString("user"), o.optString("text"), o.optString("time"), o.optString("userId"))
+        }
+        loaded.forEach { outbox.store(StoredMessage(it.id, "dm", chat.id, it.user, it.userId, it.text, it.time)) }
+        messages = loaded.ifEmpty { outbox.history("dm", chat.id).map { ChatMessage(it.id, it.user, it.text, it.time, it.userId) } }.takeLast(500)
     }
 
     LaunchedEffect(Unit) {
