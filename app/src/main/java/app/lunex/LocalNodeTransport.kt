@@ -56,6 +56,7 @@ internal class LocalNodeTransport(
             }
         }
         startDiscovery()
+        io.execute { reconnectKnownPeers() }
         main.post { onStatus("LAN-узел запущен. Поиск устройств в этой Wi-Fi сети…") }
     }
 
@@ -250,6 +251,44 @@ internal class LocalNodeTransport(
         }
     }
 
+    private fun reconnectKnownPeers() {
+        store.knownPeers().forEach { saved ->
+            runCatching {
+                val peer = parseEndpoint(saved.endpoint, saved.label)
+                val hello = request(peer, JSONObject().put("op", "hello"))
+                val actualId = hello.optString("nodeId")
+                if (hello.optBoolean("ok") && actualId == saved.peerId && actualId != store.serverId()) {
+                    val verified = peer.copy(name = hello.optString("name").ifBlank { saved.label })
+                    peers[actualId] = verified
+                    store.rememberPeer(actualId, verified.name, endpointOf(verified))
+                    main.post { onPeersChanged(peers()) }
+                    syncAll()
+                }
+            }
+        }
+    }
+
+    private fun parseEndpoint(raw: String, label: String): LanPeer {
+        val value = raw.trim()
+        val host: String
+        val endpointPort: Int
+        if (value.startsWith("[")) {
+            val close = value.indexOf(']')
+            require(close > 1 && close + 2 < value.length && value[close + 1] == ':') {
+                "Некорректный сохранённый IPv6 endpoint."
+            }
+            host = value.substring(1, close)
+            endpointPort = value.substring(close + 2).toInt()
+        } else {
+            val split = value.lastIndexOf(':')
+            require(split > 0 && value.indexOf(':') == split) { "Некорректный сохранённый endpoint." }
+            host = value.substring(0, split)
+            endpointPort = value.substring(split + 1).toInt()
+        }
+        require(endpointPort in 1..65535) { "Некорректный порт сохранённого узла." }
+        return LanPeer(label, InetAddress.getByName(host), endpointPort)
+    }
+
     private fun endpointOf(peer: LanPeer): String {
         val host = if (peer.host is java.net.Inet6Address) {
             "[" + peer.host.hostAddress.substringBefore('%') + "]"
@@ -299,7 +338,9 @@ internal class LocalNodeTransport(
                         io.execute {
                             val hello = runCatching { request(peer, JSONObject().put("op", "hello")) }.getOrNull()
                             if (hello?.optBoolean("ok") == true && hello.optString("nodeId") != store.serverId()) {
-                                peers[hello.optString("nodeId")] = peer
+                                val peerId = hello.optString("nodeId")
+                                peers[peerId] = peer.copy(name = hello.optString("name").ifBlank { peer.name })
+                                store.rememberPeer(peerId, peer.name, endpointOf(peer))
                                 main.post { onPeersChanged(peers()) }
                                 syncAll()
                             }
