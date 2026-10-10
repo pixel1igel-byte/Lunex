@@ -314,6 +314,64 @@ function App() {
       setNewCategory(false); setNewName(''); setNotice('Категория создана.');
     } catch { setNotice('Сервер недоступен.'); }
   }
+
+  async function communityAction(url, method, body, successMessage) {
+    try {
+      const res = await fetch(API + url, {method,headers:{Authorization:`Bearer ${token}`,...(body===undefined?{}:{'Content-Type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})});
+      const data = await res.json().catch(()=>({}));
+      if (!res.ok) { setNotice(data.error || 'Операция не выполнена.'); return null; }
+      setNotice(successMessage); return data;
+    } catch { setNotice('Сервер недоступен.'); return null; }
+  }
+  async function renameCommunity() {
+    if (!community || !['owner','admin'].includes(community.myRole)) return;
+    const name = window.prompt('Новое название сообщества', community.name);
+    if (name == null || !name.trim()) return;
+    const data = await communityAction(`/api/communities/${community.id}`,'PATCH',{name},'Сообщество переименовано.');
+    if (data) setCommunities(prev=>prev.map(item=>item.id===community.id?data:item));
+  }
+  async function deleteCommunity() {
+    if (!community || community.myRole!=='owner' || !window.confirm(`Удалить сообщество «${community.name}» вместе с его каналами и историей?`)) return;
+    const data = await communityAction(`/api/communities/${community.id}`,'DELETE',undefined,'Сообщество удалено.');
+    if (!data) return;
+    const remaining = communities.filter(item=>item.id!==community.id);
+    setCommunities(remaining); setActiveCommunity(remaining[0]?.id || ''); setActiveChannel(remaining[0]?.channels?.[0]?.id || ''); setDm(null);
+  }
+  async function leaveCommunity() {
+    if (!community || !community.ownerId || community.myRole==='owner' || !window.confirm(`Выйти из «${community.name}»?`)) return;
+    const data = await communityAction(`/api/communities/${community.id}/members/${userId}`,'DELETE',undefined,'Ты вышел из сообщества.');
+    if (!data) return;
+    const remaining = communities.filter(item=>item.id!==community.id);
+    setCommunities(remaining); setActiveCommunity(remaining[0]?.id || ''); setActiveChannel(remaining[0]?.channels?.[0]?.id || ''); setDm(null);
+  }
+  async function renameChannel(channel) {
+    if (!community || !['owner','admin'].includes(community.myRole)) return;
+    const name = window.prompt('Новое название канала', channel.name);
+    if (name == null || !name.trim()) return;
+    const data = await communityAction(`/api/communities/${community.id}/channels/${channel.id}`,'PATCH',{name},'Канал переименован.');
+    if (data) setCommunities(prev=>prev.map(item=>item.id===community.id?{...item,channels:item.channels.map(ch=>ch.id===channel.id?{...ch,...data}:ch)}:item));
+  }
+  async function deleteChannel(channel) {
+    if (!community || !['owner','admin'].includes(community.myRole) || !window.confirm(`Удалить канал «${channel.name}» и его историю?`)) return;
+    const data = await communityAction(`/api/communities/${community.id}/channels/${channel.id}`,'DELETE',undefined,'Канал удалён.');
+    if (!data) return;
+    const remainingChannels = community.channels.filter(ch=>ch.id!==channel.id);
+    setCommunities(prev=>prev.map(item=>item.id===community.id?{...item,channels:remainingChannels}:item));
+    if (activeChannel===channel.id) setActiveChannel(remainingChannels[0]?.id || '');
+  }
+  async function renameCategory(category) {
+    if (!community || !['owner','admin'].includes(community.myRole)) return;
+    const name = window.prompt('Новое название категории', category.name);
+    if (name == null || !name.trim()) return;
+    const data = await communityAction(`/api/communities/${community.id}/categories/${category.id}`,'PATCH',{name},'Категория переименована.');
+    if (data) setCommunities(prev=>prev.map(item=>item.id===community.id?{...item,categories:item.categories.map(cat=>cat.id===category.id?data:cat)}:item));
+  }
+  async function deleteCategory(category) {
+    if (!community || !['owner','admin'].includes(community.myRole) || !window.confirm(`Удалить категорию «${category.name}»? Каналы останутся в сообществе.`)) return;
+    const data = await communityAction(`/api/communities/${community.id}/categories/${category.id}`,'DELETE',undefined,'Категория удалена.');
+    if (!data) return;
+    setCommunities(prev=>prev.map(item=>item.id===community.id?{...item,categories:item.categories.filter(cat=>cat.id!==category.id),channels:item.channels.map(ch=>ch.categoryId===category.id?{...ch,categoryId:null}:ch)}:item));
+  }
   async function createCommunityInvite() {
     if (!community) return;
     try {
@@ -446,8 +504,8 @@ function App() {
         <div className="section-heading"><span>ЛИЧНЫЕ ЧАТЫ</span><button className="tiny-icon" title="Новый личный чат" onClick={()=>setNewDm(true)}><Plus size={15}/></button></div>
         {visibleDms.map(c=><button key={c.id} className={`dm-row ${dm?.id===c.id?'selected':''}`} onClick={()=>{setDm(c);setActiveChannel('');setMobileNav(false)}}><div className="avatar">{(c.other?.displayName || '?').slice(0,1).toUpperCase()}</div><div className="row-main"><strong>{c.other?.displayName || 'Пользователь'}</strong><span>{c.lastMessage || `@${c.other?.username || ''}`}</span></div><small>{c.time ? new Date(c.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : ''}</small></button>)}
         <div className="section-heading"><span>СООБЩЕСТВА</span><button className="tiny-icon" onClick={()=>setNewCommunity(true)}><Plus size={15}/></button></div>
-        {visibleCommunities.map(c=><div key={c.id} className="community-block"><button className={`community-title ${activeCommunity===c.id?'chosen':''}`} onClick={()=>setActiveCommunity(c.id)}><span className="community-icon">{c.name.slice(0,1).toUpperCase()}</span><span>{c.name}</span><ChevronDown size={14}/></button>{(activeCommunity===c.id || tab==='communities') && <>{(c.categories || []).map(category=><div className="channel-category" key={category.id}><div className="category-label">{category.name}</div>{c.channels.filter(ch=>ch.categoryId===category.id).map(ch=><button key={ch.id} className={`channel-row ${activeChannel===ch.id?'chosen':''}`} onClick={()=>selectChannel(c,ch)}>{ch.type==='voice'?<Volume2 size={15}/>:<Hash size={15}/>}<span>{ch.name}</span></button>)}</div>)}{c.channels.filter(ch=>!ch.categoryId || !(c.categories || []).some(category=>category.id===ch.categoryId)).map(ch=><button key={ch.id} className={`channel-row ${activeChannel===ch.id?'chosen':''}`} onClick={()=>selectChannel(c,ch)}>{ch.type==='voice'?<Volume2 size={15}/>:<Hash size={15}/>}<span>{ch.name}</span></button>)}</>}</div>)}
-        {community && <>{community.ownerId && ['owner','admin'].includes(community.myRole) && <><button className="add-channel" onClick={()=>{setNewChannel(true);setChannelCategory('')}}><Plus size={15}/> Добавить канал</button><button className="add-channel" onClick={()=>{setNewCategory(true);setNewName('')}}><Plus size={15}/> Добавить категорию</button><div className="community-tools"><button className="add-channel" onClick={createCommunityInvite}>Пригласить</button><button className="add-channel" onClick={loadCommunityMembers}>Участники</button>{community.myRole==='owner' && <button className="add-channel" onClick={openRoleEditor}>Права ролей</button>}</div></>}</>}
+        {visibleCommunities.map(c=><div key={c.id} className="community-block"><button className={`community-title ${activeCommunity===c.id?'chosen':''}`} onClick={()=>setActiveCommunity(c.id)}><span className="community-icon">{c.name.slice(0,1).toUpperCase()}</span><span>{c.name}</span><ChevronDown size={14}/></button>{(activeCommunity===c.id || tab==='communities') && <>{(c.categories || []).map(category=><div className="channel-category" key={category.id}><div className="category-heading"><span className="category-label">{category.name}</span>{community?.id===c.id && ['owner','admin'].includes(c.myRole) && <span className="category-actions"><button title="Переименовать категорию" onClick={()=>renameCategory(category)}>✎</button><button title="Удалить категорию" onClick={()=>deleteCategory(category)}>×</button></span>}</div>{c.channels.filter(ch=>ch.categoryId===category.id).map(ch=><div className="channel-row-wrap" key={ch.id}><button className={`channel-row ${activeChannel===ch.id?'chosen':''}`} onClick={()=>selectChannel(c,ch)}>{ch.type==='voice'?<Volume2 size={15}/>:<Hash size={15}/>}<span>{ch.name}</span></button>{community?.id===c.id && ['owner','admin'].includes(c.myRole) && <span className="channel-actions"><button title="Переименовать канал" onClick={()=>renameChannel(ch)}>✎</button><button title="Удалить канал" onClick={()=>deleteChannel(ch)}>×</button></span>}</div>)}</div>)}{c.channels.filter(ch=>!ch.categoryId || !(c.categories || []).some(category=>category.id===ch.categoryId)).map(ch=><div className="channel-row-wrap" key={ch.id}><button className={`channel-row ${activeChannel===ch.id?'chosen':''}`} onClick={()=>selectChannel(c,ch)}>{ch.type==='voice'?<Volume2 size={15}/>:<Hash size={15}/>}<span>{ch.name}</span></button>{community?.id===c.id && ['owner','admin'].includes(c.myRole) && <span className="channel-actions"><button title="Переименовать канал" onClick={()=>renameChannel(ch)}>✎</button><button title="Удалить канал" onClick={()=>deleteChannel(ch)}>×</button></span>}</div>)}</>}</div>)}
+        {community && <>{community.ownerId && ['owner','admin'].includes(community.myRole) && <><button className="add-channel" onClick={()=>{setNewChannel(true);setChannelCategory('')}}><Plus size={15}/> Добавить канал</button><button className="add-channel" onClick={()=>{setNewCategory(true);setNewName('')}}><Plus size={15}/> Добавить категорию</button><div className="community-tools"><button className="add-channel" onClick={createCommunityInvite}>Пригласить</button><button className="add-channel" onClick={loadCommunityMembers}>Участники</button><button className="add-channel" onClick={renameCommunity}>Переименовать</button>{community.myRole==='owner' && <><button className="add-channel" onClick={openRoleEditor}>Права ролей</button><button className="add-channel" onClick={deleteCommunity}>Удалить сообщество</button></>}{community.myRole!=='owner' && <button className="add-channel" onClick={leaveCommunity}>Выйти из сообщества</button>}</div></>}</>}
       </>}
       {tab === 'communities' && <div className="community-browser"><div className="section-label">ТВОИ СООБЩЕСТВА</div>{communities.map(c=><button className="browse-card" key={c.id} onClick={()=>{setActiveCommunity(c.id);setTab('chats')}}><div className="community-icon big">{c.name.slice(0,1)}</div><div><strong>{c.name}</strong><p>{c.description}</p><small>{c.channels.length} каналов{c.memberCount == null ? '' : ` · ${c.memberCount} участников`} · {c.myRole || 'участник'}</small></div></button>)}<button className="primary wide" onClick={()=>setNewCommunity(true)}><Plus size={16}/> Создать сообщество</button><button className="secondary wide" onClick={()=>setJoinCommunityOpen(true)}>Присоединиться по приглашению</button></div>}
       {tab === 'calls' && <div className="empty-pane"><Phone/><h3>Звонки</h3><p>Выбери собеседника ниже, чтобы начать аудио- или видеозвонок.</p>{visibleDms.length===0 ? <small>Сначала создай личный чат.</small> : visibleDms.map(c=><div className="call-contact" key={c.id}><div className="avatar">{(c.other?.displayName||'?').slice(0,1).toUpperCase()}</div><div className="row-main"><strong>{c.other?.displayName||'Пользователь'}</strong><span>@{c.other?.username||''}</span></div><button className="icon-btn" title="Голосовой звонок" onClick={()=>{setDm(c);setActiveChannel('');setTab('chats');setNotice('Чат открыт. Нажми на трубку или камеру вверху, чтобы позвонить.')}}><Phone size={18}/></button><button className="icon-btn" title="Видеозвонок" onClick={()=>{setDm(c);setActiveChannel('');setTab('chats');setNotice('Чат открыт. Нажми на трубку или камеру вверху, чтобы позвонить.')}}><Video size={18}/></button></div>)}</div>}
