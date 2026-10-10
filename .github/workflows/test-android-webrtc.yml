@@ -1,0 +1,71 @@
+name: Native Android WebRTC end-to-end
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'app/**'
+      - 'Lunex-MVP/**'
+      - '.github/workflows/test-android-webrtc.yml'
+permissions:
+  contents: read
+jobs:
+  android-browser-call:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: 'true'
+      LUNEX_DATA_FILE: /tmp/lunex-android-e2e.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: Lunex-MVP/package.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Install web test dependencies
+        working-directory: Lunex-MVP
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Run Android-to-browser call test on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          script: |
+            set -euo pipefail
+            rm -f /tmp/lunex-browser-ready /tmp/lunex-android-e2e.json
+            cd Lunex-MVP
+            npm run server > /tmp/lunex-server.log 2>&1 &
+            SERVER_PID=$!
+            npm run client -- --host 0.0.0.0 > /tmp/lunex-vite.log 2>&1 &
+            VITE_PID=$!
+            npx playwright test --config=playwright.android.config.js tests-browser/android-peer.spec.js > /tmp/lunex-browser-test.log 2>&1 &
+            BROWSER_PID=$!
+            cleanup() {
+              kill "$BROWSER_PID" "$VITE_PID" "$SERVER_PID" 2>/dev/null || true
+            }
+            trap cleanup EXIT
+            for i in $(seq 1 90); do
+              if [ -f /tmp/lunex-browser-ready ]; then break; fi
+              if ! kill -0 "$BROWSER_PID" 2>/dev/null; then cat /tmp/lunex-browser-test.log; exit 1; fi
+              sleep 1
+            done
+            if [ ! -f /tmp/lunex-browser-ready ]; then
+              cat /tmp/lunex-server.log /tmp/lunex-vite.log /tmp/lunex-browser-test.log
+              exit 1
+            fi
+            cd ..
+            gradle --no-daemon :app:connectedDebugAndroidTest
+            wait "$BROWSER_PID"
+            cat /tmp/lunex-browser-test.log
