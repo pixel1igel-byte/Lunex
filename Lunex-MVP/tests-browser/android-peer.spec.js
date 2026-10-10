@@ -33,7 +33,7 @@ test('native Android peer exchanges live audio and video with a browser peer', a
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   try {
-    const socketConnected = page.waitForEvent('websocket', ws => ws.url().includes('/socket.io/'), { timeout: 20000 });
+    const socketConnected = page.waitForEvent('websocket', { predicate: ws => ws.url().includes('/socket.io/'), timeout: 20000 });
     await register(page, 'e2e_bob', 'Bob E2E');
     await socketConnected;
     await page.waitForTimeout(500);
