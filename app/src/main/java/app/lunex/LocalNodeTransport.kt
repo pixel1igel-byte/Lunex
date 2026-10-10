@@ -217,6 +217,24 @@ internal class LocalNodeTransport(
                         if (room == null) JSONObject().put("ok", false).put("error", "Приглашение недействительно")
                         else JSONObject().put("ok", true).put("roomId", room.id).put("roomName", room.name)
                     }
+                    "peers" -> {
+                        val roomId = request.optString("roomId")
+                        val token = request.optString("token")
+                        if (store.roomForInvite(token) != roomId) {
+                            JSONObject().put("ok", false).put("error", "Нет доступа к комнате")
+                        } else {
+                            val array = org.json.JSONArray()
+                            peers.forEach { (peerId, peer) ->
+                                if (peerId != store.serverId()) {
+                                    array.put(JSONObject()
+                                        .put("nodeId", peerId)
+                                        .put("name", peer.name)
+                                        .put("endpoint", endpointOf(peer)))
+                                }
+                            }
+                            JSONObject().put("ok", true).put("peers", array)
+                        }
+                    }
                     "invite" -> {
                         val roomId = request.optString("roomId")
                         val authToken = request.optString("authToken")
@@ -339,6 +357,55 @@ internal class LocalNodeTransport(
         peers().filterNot { peer ->
             sourceAddress != null && peer.host.address.contentEquals(sourceAddress.address)
         }.forEach { peer -> sendMessageToPeer(peer, message) }
+    }
+
+    /**
+     * Walk peer lists learned from room-authorized nodes. This gives the mesh
+     * multi-hop discovery without a central directory; every candidate's endpoint
+     * is verified against its advertised node ID before being persisted.
+     */
+    private fun discoverRoomMesh(seedPeer: LanPeer, roomId: String) {
+        val roomTokens = store.inviteTokensForRoom(roomId)
+        if (roomTokens.isEmpty()) return
+        val queue = java.util.ArrayDeque<LanPeer>()
+        val visited = mutableSetOf<String>()
+        queue.add(seedPeer)
+        while (queue.isNotEmpty() && visited.size < 128) {
+            val current = queue.removeFirst()
+            val hello = runCatching { request(current, JSONObject().put("op", "hello")) }.getOrNull() ?: continue
+            val currentId = hello.optString("nodeId")
+            if (!hello.optBoolean("ok") || currentId.isBlank() || currentId == store.serverId() || !visited.add(currentId)) continue
+
+            var response: JSONObject? = null
+            for (token in roomTokens) {
+                val candidate = runCatching {
+                    request(current, JSONObject().put("op", "peers").put("roomId", roomId).put("token", token))
+                }.getOrNull()
+                if (candidate?.optBoolean("ok") == true) {
+                    response = candidate
+                    break
+                }
+            }
+            val list = response?.optJSONArray("peers") ?: continue
+            for (index in 0 until list.length()) {
+                val advertised = list.optJSONObject(index) ?: continue
+                val expectedId = advertised.optString("nodeId")
+                val endpoint = advertised.optString("endpoint")
+                if (expectedId.isBlank() || endpoint.isBlank() || expectedId == store.serverId() || expectedId in visited) continue
+                val candidatePeer = runCatching {
+                    parseEndpoint(endpoint, advertised.optString("name").ifBlank { endpoint })
+                }.getOrNull() ?: continue
+                val candidateHello = runCatching {
+                    request(candidatePeer, JSONObject().put("op", "hello"))
+                }.getOrNull() ?: continue
+                if (!candidateHello.optBoolean("ok") || candidateHello.optString("nodeId") != expectedId) continue
+                val verified = candidatePeer.copy(name = candidateHello.optString("name").ifBlank { candidatePeer.name })
+                peers[expectedId] = verified
+                store.rememberPeer(expectedId, verified.serviceName, endpointOf(verified))
+                main.post { onPeersChanged(peers()) }
+                queue.addLast(verified)
+            }
+        }
     }
 
     private fun reconnectKnownPeers() {
