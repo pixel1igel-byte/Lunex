@@ -169,7 +169,7 @@ private fun LunexApp() {
         if (needed.isEmpty()) action() else { pendingCallAction = action; permissionLauncher.launch(needed.toTypedArray()) }
     }
     val callManager = remember(context, token, iceServers) {
-        AndroidCallManager(context, iceServers,
+        if (token.isBlank()) null else AndroidCallManager(context, iceServers,
             onIncoming = { event -> android.os.Handler(android.os.Looper.getMainLooper()).post { incomingCall = event; callMode = event.optString("mode", "audio") } },
             onState = { state -> android.os.Handler(android.os.Looper.getMainLooper()).post {
                 callState = if (state in setOf("ended", "rejected", "failed")) "idle" else state
@@ -201,8 +201,8 @@ private fun LunexApp() {
             if (parsed.isNotEmpty()) iceServers = parsed
         }
     }
-    LaunchedEffect(socket, callManager) { socket?.let { callManager.bind(it) } }
-    DisposableEffect(callManager) { onDispose { callManager.dispose() } }
+    LaunchedEffect(socket, callManager) { if (socket != null && callManager != null) callManager.bind(socket!!) }
+    DisposableEffect(callManager) { onDispose { callManager?.dispose() } }
 
     suspend fun loadDms(base: String, authToken: String): List<DirectChat> {
         val arr = requestArray(base, "/api/dms", authToken)
@@ -411,12 +411,12 @@ private fun LunexApp() {
                             IconButton(onClick = {
                                 val chat = activeDm
                                 if (chat == null || chat.userId.isBlank()) notice = "Не удалось определить пользователя для звонка."
-                                else { callMode = "audio"; withCallPermissions { callManager.startOutgoing(chat.id, chat.userId, "audio") } }
+                                else { callMode = "audio"; withCallPermissions { callManager?.startOutgoing(chat.id, chat.userId, "audio") } }
                             }, modifier = Modifier.testTag("call-audio")) { Icon(Icons.Default.Call, "Голосовой звонок", tint = Purple) }
                             IconButton(onClick = {
                                 val chat = activeDm
                                 if (chat == null || chat.userId.isBlank()) notice = "Не удалось определить пользователя для звонка."
-                                else { callMode = "video"; withCallPermissions { callManager.startOutgoing(chat.id, chat.userId, "video") } }
+                                else { callMode = "video"; withCallPermissions { callManager?.startOutgoing(chat.id, chat.userId, "video") } }
                             }, modifier = Modifier.testTag("call-video")) { Icon(Icons.Default.Videocam, "Видеозвонок", tint = Purple) }
                         }
                     }
@@ -457,22 +457,22 @@ private fun LunexApp() {
                             Text(incomingCall?.optJSONObject("caller")?.optString("displayName").orEmpty().ifBlank { activeDm?.displayName ?: "Собеседник" }, color = Muted)
                             Text(when (callState) { "calling" -> "Вызов…"; "incoming" -> "Входящий вызов"; "connecting" -> "Подключаемся…"; "connected" -> "Соединение установлено"; else -> "Подготовка звонка…" })
                             if (callMode == "video") {
-                                localVideoTrack?.let { Text("Твоё видео", fontWeight = FontWeight.SemiBold); CallVideoPreview(it, callManager, true) }
-                                remoteVideoTrack?.let { Text("Видео собеседника", fontWeight = FontWeight.SemiBold); CallVideoPreview(it, callManager, false) }
+                                localVideoTrack?.let { Text("Твоё видео", fontWeight = FontWeight.SemiBold); CallVideoPreview(it, callManager!!, true) }
+                                remoteVideoTrack?.let { Text("Видео собеседника", fontWeight = FontWeight.SemiBold); CallVideoPreview(it, callManager!!, false) }
                             }
                         }
                     },
                     confirmButton = {
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             if (isIncoming) {
-                                TextButton(onClick = { withCallPermissions { incomingCall = null; callState = "connecting"; callManager.acceptIncoming() } }) { Text("Принять") }
-                                TextButton(onClick = { callManager.rejectIncoming() }) { Text("Отклонить", color = Color(0xFFFF7188)) }
+                                TextButton(onClick = { withCallPermissions { incomingCall = null; callState = "connecting"; callManager?.acceptIncoming() } }) { Text("Принять") }
+                                TextButton(onClick = { callManager?.rejectIncoming() }) { Text("Отклонить", color = Color(0xFFFF7188)) }
                             } else {
                                 if (callState == "connected") {
-                                    TextButton(onClick = { micEnabled = !micEnabled; callManager.setMicrophoneEnabled(micEnabled) }) { Icon(if (micEnabled) Icons.Default.Mic else Icons.Default.MicOff, null); Text("Микрофон") }
-                                    if (callMode == "video") TextButton(onClick = { cameraEnabled = !cameraEnabled; callManager.setCameraEnabled(cameraEnabled) }) { Icon(if (cameraEnabled) Icons.Default.Videocam else Icons.Default.VideocamOff, null); Text("Камера") }
+                                    TextButton(onClick = { micEnabled = !micEnabled; callManager?.setMicrophoneEnabled(micEnabled) }) { Icon(if (micEnabled) Icons.Default.Mic else Icons.Default.MicOff, null); Text("Микрофон") }
+                                    if (callMode == "video") TextButton(onClick = { cameraEnabled = !cameraEnabled; callManager?.setCameraEnabled(cameraEnabled) }) { Icon(if (cameraEnabled) Icons.Default.Videocam else Icons.Default.VideocamOff, null); Text("Камера") }
                                 }
-                                TextButton(onClick = { callManager.endCall() }) { Icon(Icons.Default.CallEnd, null, tint = Color(0xFFFF7188)); Text("Завершить", color = Color(0xFFFF7188)) }
+                                TextButton(onClick = { callManager?.endCall() }) { Icon(Icons.Default.CallEnd, null, tint = Color(0xFFFF7188)); Text("Завершить", color = Color(0xFFFF7188)) }
                             }
                         }
                     }
