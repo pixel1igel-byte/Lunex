@@ -9,6 +9,7 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PrintWriter
+import java.io.OutputStreamWriter
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -166,7 +167,7 @@ internal class LocalNodeTransport(
             } catch (e: Exception) {
                 JSONObject().put("ok", false).put("error", e.message ?: "Ошибка запроса")
             }
-            PrintWriter(socket.getOutputStream(), true, Charsets.UTF_8).println(response.toString())
+            PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true).println(response.toString())
         }
     }
 
@@ -174,7 +175,7 @@ internal class LocalNodeTransport(
         Socket().use { socket ->
             socket.connect(java.net.InetSocketAddress(peer.host, peer.port), 4000)
             socket.soTimeout = 6000
-            PrintWriter(socket.getOutputStream(), true, Charsets.UTF_8).println(payload.toString())
+            PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true).println(payload.toString())
             val line = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8)).readLine()
                 ?: throw IllegalStateException("Узел не ответил")
             return JSONObject(line)
