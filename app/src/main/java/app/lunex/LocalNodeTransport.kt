@@ -3,10 +3,16 @@ package app.lunex
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.os.Handler
 import android.os.Looper
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import java.io.InputStreamReader
 import java.io.PrintWriter
 import java.io.OutputStreamWriter
@@ -28,6 +34,8 @@ import java.util.concurrent.TimeUnit
 private const val LUNEX_NODE_PORT = 45873
 private const val MAX_REQUEST_FRAME_CHARS = 65_536
 private const val MAX_RESPONSE_FRAME_CHARS = 24_000_000
+private const val MAX_FILE_BYTES = 25L * 1024L * 1024L
+private const val FILE_CHUNK_BYTES = 24 * 1024
 
 internal data class LanPeer(val name: String, val host: InetAddress, val port: Int, val serviceName: String = name)
 
@@ -36,6 +44,7 @@ internal class LocalNodeTransport(
     private val store: LocalNodeStore,
     private val onPeersChanged: (List<LanPeer>) -> Unit,
     private val onMessage: (LocalNodeMessage) -> Unit,
+    private val onFile: (LocalNodeFile) -> Unit,
     private val onStatus: (String) -> Unit
 ) {
     private val app = context.applicationContext
@@ -166,6 +175,61 @@ internal class LocalNodeTransport(
         io.execute { relayToPeers(message, null) }
     }
 
+    fun shareFile(uri: Uri, roomId: String, senderName: String, callback: (Boolean, String) -> Unit) {
+        io.execute {
+            var created: File? = null
+            var persisted = false
+            try {
+                require(store.inviteTokensForRoom(roomId).isNotEmpty()) { "Сначала создай приглашение для комнаты." }
+                var fileName = uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "file"
+                app.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (index >= 0) fileName = cursor.getString(index)?.takeIf { it.isNotBlank() } ?: fileName
+                    }
+                }
+                fileName = fileName.substringAfterLast('/').substringAfterLast('\\').take(255).ifBlank { "file" }
+                val mimeType = (app.contentResolver.getType(uri) ?: "application/octet-stream").take(128)
+                val fileId = java.util.UUID.randomUUID().toString()
+                val directory = roomFilesDirectory(roomId)
+                if (!directory.exists() && !directory.mkdirs()) throw IllegalStateException("Не удалось создать каталог файлов.")
+                val destination = File(directory, fileId)
+                created = destination
+                val digest = MessageDigest.getInstance("SHA-256")
+                var size = 0L
+                val input = app.contentResolver.openInputStream(uri) ?: throw IllegalStateException("Не удалось открыть выбранный файл.")
+                input.use { source ->
+                    FileOutputStream(destination).use { output ->
+                        val buffer = ByteArray(16 * 1024)
+                        while (true) {
+                            val count = source.read(buffer)
+                            if (count < 0) break
+                            size += count
+                            require(size <= MAX_FILE_BYTES) { "Файл слишком большой. Максимум 25 МБ." }
+                            output.write(buffer, 0, count)
+                            digest.update(buffer, 0, count)
+                        }
+                    }
+                }
+                val sha = digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+                val metadata = LocalNodeFile(
+                    fileId, roomId, store.serverId(), senderName.take(80), fileName, mimeType,
+                    size, sha, ((size + FILE_CHUNK_BYTES - 1) / FILE_CHUNK_BYTES).toInt(),
+                    System.currentTimeMillis(), destination.absolutePath, true
+                )
+                require(store.insertFile(metadata)) { "ID файла уже существует." }
+                persisted = true
+                onFile(metadata)
+                main.post { onStatus("Файл «$fileName» сохранён локально; синхронизирую с узлами комнаты…") }
+                runCatching { syncAll() }
+                main.post { callback(true, "Файл «$fileName» добавлен. Передача узлам идёт в фоне, повторная синхронизация будет при их подключении.") }
+            } catch (e: Exception) {
+                if (!persisted) created?.let { runCatching { it.delete() } }
+                main.post { callback(false, e.message ?: "Не удалось добавить файл.") }
+            }
+        }
+    }
+
     fun syncAll() {
         io.execute {
             peers.entries.toList().forEach { entry ->
@@ -176,10 +240,99 @@ internal class LocalNodeTransport(
                         runCatching { syncInvites(peer, room.id) }
                         runCatching { pushHistoryToPeer(peer, room.id) }
                         runCatching { sync(peer, room.id) }
+                        runCatching { pushFilesToPeer(peer, room.id) }
                     }
                 }
             }
         }
+    }
+
+    private fun roomFilesDirectory(roomId: String): File {
+        val canonicalId = java.util.UUID.fromString(roomId).toString()
+        require(canonicalId.equals(roomId, ignoreCase = true)) { "Некорректный ID комнаты." }
+        return File(app.filesDir, "lunex-files/$canonicalId")
+    }
+
+    private fun pushFilesToPeer(peer: LanPeer, roomId: String) {
+        store.files(roomId).forEach { file -> runCatching { sendFileToPeer(peer, file) } }
+    }
+
+    private fun sendFileToPeer(peer: LanPeer, file: LocalNodeFile): Boolean {
+        val localFile = File(file.localPath)
+        if (!file.complete || !localFile.isFile || localFile.length() != file.sizeBytes) return false
+        var selectedToken: String? = null
+        for (token in store.inviteTokensForRoom(file.roomId)) {
+            val manifest = JSONObject()
+                .put("op", "file-manifest")
+                .put("token", token)
+                .put("nodeId", store.serverId())
+                .put("fileId", file.id)
+                .put("roomId", file.roomId)
+                .put("senderNodeId", file.senderNodeId)
+                .put("senderName", file.senderName)
+                .put("fileName", file.fileName)
+                .put("mimeType", file.mimeType)
+                .put("sizeBytes", file.sizeBytes)
+                .put("sha256", file.sha256)
+                .put("chunkCount", file.chunkCount)
+                .put("createdAt", file.createdAt)
+            val response = runCatching { request(peer, manifest) }.getOrNull() ?: continue
+            if (response.optBoolean("ok")) {
+                if (response.optBoolean("already")) return true
+                selectedToken = token
+                break
+            }
+        }
+        val token = selectedToken ?: return false
+        FileInputStream(localFile).use { input ->
+            for (index in 0 until file.chunkCount) {
+                val expected = if (index < file.chunkCount - 1) FILE_CHUNK_BYTES
+                    else (file.sizeBytes - index.toLong() * FILE_CHUNK_BYTES).toInt()
+                val chunk = ByteArray(expected)
+                var offset = 0
+                while (offset < expected) {
+                    val read = input.read(chunk, offset, expected - offset)
+                    if (read < 0) throw IllegalStateException("Локальный файл изменился во время передачи.")
+                    offset += read
+                }
+                val response = request(peer, JSONObject()
+                    .put("op", "file-chunk")
+                    .put("token", token)
+                    .put("nodeId", store.serverId())
+                    .put("roomId", file.roomId)
+                    .put("fileId", file.id)
+                    .put("index", index)
+                    .put("data", Base64.getEncoder().encodeToString(chunk)))
+                if (!response.optBoolean("ok")) throw IllegalStateException("Узел отклонил часть файла.")
+            }
+        }
+        val completed = request(peer, JSONObject()
+            .put("op", "file-complete")
+            .put("token", token)
+            .put("nodeId", store.serverId())
+            .put("roomId", file.roomId)
+            .put("fileId", file.id))
+        return completed.optBoolean("ok")
+    }
+
+    private fun relayFileToPeers(file: LocalNodeFile, sourceAddress: InetAddress?) {
+        peers.entries.toList().filter { entry ->
+            store.isPeerInRoom(entry.key, file.roomId) &&
+                (sourceAddress == null || !entry.value.host.address.contentEquals(sourceAddress.address))
+        }.forEach { entry -> runCatching { sendFileToPeer(entry.value, file) } }
+    }
+
+    private fun sha256File(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        FileInputStream(file).use { input ->
+            val buffer = ByteArray(16 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
     private fun sync(peer: LanPeer, roomId: String) {
@@ -253,6 +406,109 @@ internal class LocalNodeTransport(
                         else {
                             rememberPeerRoomIfKnown(request.optString("nodeId"), room.id, socket.inetAddress)
                             JSONObject().put("ok", true).put("roomId", room.id).put("roomName", room.name)
+                        }
+                    }
+                    "file-manifest" -> {
+                        val token = request.optString("token")
+                        val roomId = request.optString("roomId")
+                        val rawId = request.optString("fileId")
+                        val fileId = runCatching { java.util.UUID.fromString(rawId).toString() }.getOrNull()
+                        val size = request.optLong("sizeBytes", -1L)
+                        val sha = request.optString("sha256").lowercase()
+                        val chunkCount = request.optInt("chunkCount", -1)
+                        val expectedChunks = if (size in 0..MAX_FILE_BYTES) ((size + FILE_CHUNK_BYTES - 1) / FILE_CHUNK_BYTES).toInt() else -1
+                        val fileName = request.optString("fileName").substringAfterLast('/').substringAfterLast('\\').take(255).ifBlank { "file" }
+                        val mimeType = request.optString("mimeType", "application/octet-stream").take(128)
+                        val senderName = request.optString("senderName", "Узел").take(80)
+                        val senderId = request.optString("senderNodeId").take(128)
+                        val valid = store.roomForInvite(token) == roomId && store.room(roomId) != null &&
+                            fileId != null && fileId.equals(rawId, ignoreCase = true) &&
+                            size in 0..MAX_FILE_BYTES && sha.matches(Regex("[0-9a-f]{64}")) &&
+                            chunkCount == expectedChunks && senderId.isNotBlank()
+                        if (!valid) {
+                            JSONObject().put("ok", false).put("error", "Некорректный манифест файла.")
+                        } else {
+                            val validFileId = fileId ?: throw IllegalStateException("Некорректный ID файла.")
+                            rememberPeerRoomIfKnown(request.optString("nodeId"), roomId, socket.inetAddress)
+                            val existing = store.file(validFileId)
+                            if (existing != null && (existing.roomId != roomId || existing.sizeBytes != size ||
+                                existing.sha256 != sha || existing.chunkCount != chunkCount)) {
+                                JSONObject().put("ok", false).put("error", "ID файла уже занят другими данными.")
+                            } else if (existing?.complete == true) {
+                                JSONObject().put("ok", true).put("already", true)
+                            } else {
+                                val directory = roomFilesDirectory(roomId)
+                                if (!directory.exists() && !directory.mkdirs()) throw IllegalStateException("Не удалось создать каталог файла.")
+                                val destination = File(directory, validFileId)
+                                store.insertFile(LocalNodeFile(
+                                    validFileId, roomId, senderId, senderName, fileName, mimeType,
+                                    size, sha, chunkCount, request.optLong("createdAt", System.currentTimeMillis()),
+                                    destination.absolutePath, false
+                                ))
+                                val saved = store.file(validFileId) ?: throw IllegalStateException("Не удалось сохранить манифест файла.")
+                                if (saved.roomId != roomId || saved.sha256 != sha || saved.sizeBytes != size) {
+                                    JSONObject().put("ok", false).put("error", "Конфликт манифеста файла.")
+                                } else JSONObject().put("ok", true)
+                            }
+                        }
+                    }
+                    "file-chunk" -> {
+                        val token = request.optString("token")
+                        val roomId = request.optString("roomId")
+                        val fileId = request.optString("fileId")
+                        val file = store.file(fileId)
+                        val index = request.optInt("index", -1)
+                        val bytes = Base64.getDecoder().decode(request.optString("data"))
+                        val expected = if (file != null && index >= 0 && index < file.chunkCount) {
+                            if (index < file.chunkCount - 1) FILE_CHUNK_BYTES
+                            else (file.sizeBytes - index.toLong() * FILE_CHUNK_BYTES).toInt()
+                        } else -1
+                        if (store.roomForInvite(token) != roomId || file == null || file.roomId != roomId ||
+                            file.complete || bytes.size != expected || bytes.size > FILE_CHUNK_BYTES) {
+                            JSONObject().put("ok", false).put("error", "Недопустимая часть файла.")
+                        } else {
+                            rememberPeerRoomIfKnown(request.optString("nodeId"), roomId, socket.inetAddress)
+                            val partial = File(file.localPath + ".part")
+                            if (!partial.parentFile.exists() && !partial.parentFile.mkdirs()) throw IllegalStateException("Не удалось создать файл.")
+                            RandomAccessFile(partial, "rw").use { output ->
+                                output.seek(index.toLong() * FILE_CHUNK_BYTES)
+                                output.write(bytes)
+                            }
+                            JSONObject().put("ok", true)
+                        }
+                    }
+                    "file-complete" -> {
+                        val token = request.optString("token")
+                        val roomId = request.optString("roomId")
+                        val fileId = request.optString("fileId")
+                        val file = store.file(fileId)
+                        if (store.roomForInvite(token) != roomId || file == null || file.roomId != roomId) {
+                            JSONObject().put("ok", false).put("error", "Нет доступа к файлу.")
+                        } else if (file.complete) {
+                            JSONObject().put("ok", true).put("already", true)
+                        } else {
+                            rememberPeerRoomIfKnown(request.optString("nodeId"), roomId, socket.inetAddress)
+                            val destination = File(file.localPath)
+                            val partial = File(file.localPath + ".part")
+                            if (file.sizeBytes == 0L && !partial.exists()) {
+                                if (!partial.parentFile.exists() && !partial.parentFile.mkdirs()) throw IllegalStateException("Не удалось создать файл.")
+                                partial.createNewFile()
+                            }
+                            if (!partial.isFile || partial.length() != file.sizeBytes || sha256File(partial) != file.sha256) {
+                                JSONObject().put("ok", false).put("error", "Контрольная сумма файла не совпала.")
+                            } else {
+                                if (destination.exists()) destination.delete()
+                                if (!partial.renameTo(destination)) {
+                                    JSONObject().put("ok", false).put("error", "Не удалось завершить запись файла.")
+                                } else {
+                                    store.markFileComplete(fileId)
+                                    val completed = store.file(fileId) ?: file.copy(complete = true)
+                                    main.post { onFile(completed) }
+                                    val sourceAddress = socket.inetAddress
+                                    io.execute { relayFileToPeers(completed, sourceAddress) }
+                                    JSONObject().put("ok", true)
+                                }
+                            }
                         }
                     }
                     "prove-room" -> {

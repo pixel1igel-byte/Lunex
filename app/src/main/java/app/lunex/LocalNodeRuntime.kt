@@ -9,7 +9,8 @@ import kotlinx.coroutines.flow.update
 internal data class LocalNodeUiState(
     val peers: List<LanPeer> = emptyList(),
     val status: String = "Запуск узла Lunex…",
-    val lastMessage: LocalNodeMessage? = null
+    val lastMessage: LocalNodeMessage? = null,
+    val lastFile: LocalNodeFile? = null
 )
 
 /**
@@ -41,6 +42,7 @@ internal object LocalNodeRuntime {
             store,
             onPeersChanged = { peers -> mutableState.update { it.copy(peers = peers) } },
             onMessage = { message -> mutableState.update { it.copy(lastMessage = message) } },
+            onFile = { file -> mutableState.update { it.copy(lastFile = file) } },
             onStatus = { status -> mutableState.update { it.copy(status = status) } }
         )
         transportInstance = transport

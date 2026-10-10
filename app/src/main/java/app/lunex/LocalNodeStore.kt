@@ -31,6 +31,21 @@ internal data class StoredNodePeer(
     val lastSeen: Long
 )
 
+internal data class LocalNodeFile(
+    val id: String,
+    val roomId: String,
+    val senderNodeId: String,
+    val senderName: String,
+    val fileName: String,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val sha256: String,
+    val chunkCount: Int,
+    val createdAt: Long,
+    val localPath: String,
+    val complete: Boolean
+)
+
 /**
  * The device's durable node identity and local account database.
  *
@@ -39,7 +54,7 @@ internal data class StoredNodePeer(
  * stable for this installation and is not the same as any room ID or invite token.
  */
 internal class LocalNodeStore(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, "lunex-node.db", null, 3) {
+    SQLiteOpenHelper(context.applicationContext, "lunex-node.db", null, 4) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -96,6 +111,23 @@ internal class LocalNodeStore(context: Context) :
         db.execSQL("CREATE TABLE room_tokens (room_id TEXT NOT NULL, token TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(room_id, token))")
         db.execSQL("CREATE TABLE peer_rooms (peer_id TEXT NOT NULL, room_id TEXT NOT NULL, last_seen INTEGER NOT NULL, PRIMARY KEY(peer_id, room_id))")
         db.execSQL("CREATE INDEX idx_peer_rooms_room ON peer_rooms(room_id)")
+        db.execSQL(
+            """CREATE TABLE node_files (
+                file_id TEXT PRIMARY KEY NOT NULL,
+                room_id TEXT NOT NULL,
+                sender_node_id TEXT NOT NULL,
+                sender_name TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                chunk_count INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                local_path TEXT NOT NULL,
+                complete INTEGER NOT NULL DEFAULT 0
+            )""".trimIndent()
+        )
+        db.execSQL("CREATE INDEX idx_node_files_room_time ON node_files(room_id, created_at)")
         ensureNode(db)
     }
 
@@ -104,6 +136,25 @@ internal class LocalNodeStore(context: Context) :
         if (oldVersion < 3) {
             db.execSQL("CREATE TABLE IF NOT EXISTS peer_rooms (peer_id TEXT NOT NULL, room_id TEXT NOT NULL, last_seen INTEGER NOT NULL, PRIMARY KEY(peer_id, room_id))")
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_peer_rooms_room ON peer_rooms(room_id)")
+        }
+        if (oldVersion < 4) {
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS node_files (
+                    file_id TEXT PRIMARY KEY NOT NULL,
+                    room_id TEXT NOT NULL,
+                    sender_node_id TEXT NOT NULL,
+                    sender_name TEXT NOT NULL,
+                    file_name TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    chunk_count INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    local_path TEXT NOT NULL,
+                    complete INTEGER NOT NULL DEFAULT 0
+                )""".trimIndent()
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_node_files_room_time ON node_files(room_id, created_at)")
         }
     }
 
@@ -368,6 +419,66 @@ internal class LocalNodeStore(context: Context) :
             }
         }
         return result
+    }
+
+    @Synchronized
+    fun insertFile(file: LocalNodeFile): Boolean {
+        require(file.id.matches(Regex("[0-9a-fA-F-]{36}"))) { "Некорректный ID файла." }
+        require(file.roomId.isNotBlank() && file.localPath.isNotBlank()) { "Некорректные данные файла." }
+        val values = ContentValues().apply {
+            put("file_id", file.id)
+            put("room_id", file.roomId)
+            put("sender_node_id", file.senderNodeId)
+            put("sender_name", file.senderName.take(80))
+            put("file_name", file.fileName.take(255))
+            put("mime_type", file.mimeType.take(128))
+            put("size_bytes", file.sizeBytes)
+            put("sha256", file.sha256.lowercase())
+            put("chunk_count", file.chunkCount)
+            put("created_at", file.createdAt)
+            put("local_path", file.localPath)
+            put("complete", if (file.complete) 1 else 0)
+        }
+        return writableDatabase.insertWithOnConflict("node_files", null, values, SQLiteDatabase.CONFLICT_IGNORE) != -1L
+    }
+
+    @Synchronized
+    fun file(fileId: String): LocalNodeFile? {
+        readableDatabase.rawQuery(
+            "SELECT file_id, room_id, sender_node_id, sender_name, file_name, mime_type, size_bytes, sha256, chunk_count, created_at, local_path, complete FROM node_files WHERE file_id = ?",
+            arrayOf(fileId)
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            return LocalNodeFile(
+                cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3),
+                cursor.getString(4), cursor.getString(5), cursor.getLong(6), cursor.getString(7),
+                cursor.getInt(8), cursor.getLong(9), cursor.getString(10), cursor.getInt(11) != 0
+            )
+        }
+    }
+
+    @Synchronized
+    fun files(roomId: String, limit: Int = 100): List<LocalNodeFile> {
+        val result = mutableListOf<LocalNodeFile>()
+        readableDatabase.rawQuery(
+            "SELECT file_id, room_id, sender_node_id, sender_name, file_name, mime_type, size_bytes, sha256, chunk_count, created_at, local_path, complete FROM node_files WHERE room_id = ? AND complete = 1 ORDER BY created_at DESC LIMIT ?",
+            arrayOf(roomId, limit.coerceIn(1, 500).toString())
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                result += LocalNodeFile(
+                    cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3),
+                    cursor.getString(4), cursor.getString(5), cursor.getLong(6), cursor.getString(7),
+                    cursor.getInt(8), cursor.getLong(9), cursor.getString(10), cursor.getInt(11) != 0
+                )
+            }
+        }
+        return result.asReversed()
+    }
+
+    @Synchronized
+    fun markFileComplete(fileId: String): Boolean {
+        val values = ContentValues().apply { put("complete", 1) }
+        return writableDatabase.update("node_files", values, "file_id = ?", arrayOf(fileId)) > 0
     }
 
     @Synchronized
