@@ -234,7 +234,7 @@ internal class LocalNodeTransport(
                         val valid = roomId.isNotBlank() && store.room(roomId) != null &&
                             challenge.length in 16..128 && proof != null &&
                             store.inviteTokensForRoom(roomId).any { token ->
-                                MessageDigest.isEqual(roomProof(token, challenge), proof)
+                                MessageDigest.isEqual(roomProof(token, roomId, challenge), proof)
                             }
                         if (valid) rememberPeerRoomIfKnown(request.optString("nodeId"), roomId, socket.inetAddress)
                         JSONObject().put("ok", valid)
@@ -504,7 +504,7 @@ internal class LocalNodeTransport(
      */
     private fun proveRoomMembership(peer: LanPeer, roomId: String, token: String): Boolean {
         val challenge = java.util.UUID.randomUUID().toString()
-        val proof = roomProof(token, challenge).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val proof = roomProof(token, roomId, challenge).joinToString("") { "%02x".format(it.toInt() and 0xff) }
         val response = request(peer, JSONObject()
             .put("op", "prove-room")
             .put("roomId", roomId)
@@ -514,10 +514,10 @@ internal class LocalNodeTransport(
         return response.optBoolean("ok")
     }
 
-    private fun roomProof(token: String, challenge: String): ByteArray {
+    private fun roomProof(token: String, roomId: String, challenge: String): ByteArray {
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(token.toByteArray(Charsets.UTF_8), "HmacSHA256"))
-        return mac.doFinal(challenge.toByteArray(Charsets.UTF_8))
+        return mac.doFinal((roomId + ":" + challenge).toByteArray(Charsets.UTF_8))
     }
 
     private fun hexToBytes(value: String): ByteArray? {
