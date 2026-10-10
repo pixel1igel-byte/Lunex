@@ -288,6 +288,16 @@ test('community membership, invite limits, roles and private channel permissions
   const deniedMembers = await api(outsider.token, `/api/communities/${community.id}/members`);
   assert.equal(deniedMembers.response.status, 403);
   const memberSocket = await connect(member.token);
+  const ownerSocket = await connect(owner.token);
+  ownerSocket.emit('channel:join', privateChannel.id);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  ownerSocket.emit('message:send', { channelId: privateChannel.id, text: 'moderation permission test' });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const ownerHistory = await api(owner.token, `/api/messages/${privateChannel.id}`);
+  assert.equal(ownerHistory.data.length, 1);
+  const messageId = ownerHistory.data[0].id;
+  const cannotModerate = await api(member.token, `/api/communities/${community.id}/channels/${privateChannel.id}/messages/${messageId}`, 'DELETE');
+  assert.equal(cannotModerate.response.status, 403);
   memberSocket.emit('channel:join', privateChannel.id);
   memberSocket.emit('message:send', { channelId: privateChannel.id, text: 'should not be stored' });
   await new Promise(resolve => setTimeout(resolve, 100));
@@ -301,6 +311,10 @@ test('community membership, invite limits, roles and private channel permissions
   assert.equal(adminCannotEditRoles.response.status, 403);
   const nowAllowed = await api(member.token, `/api/messages/${privateChannel.id}`);
   assert.equal(nowAllowed.response.status, 200);
+  const canModerate = await api(member.token, `/api/communities/${community.id}/channels/${privateChannel.id}/messages/${messageId}`, 'DELETE');
+  assert.equal(canModerate.response.status, 200);
+  const deletedHistory = await api(owner.token, `/api/messages/${privateChannel.id}`);
+  assert.equal(deletedHistory.data.length, 0);
   const memberAdminChannel = await api(member.token, `/api/communities/${community.id}/channels`, 'POST', { name: 'admin-created' });
   assert.equal(memberAdminChannel.response.status, 201, JSON.stringify(memberAdminChannel.data));
   const categoryDelete = await api(owner.token, `/api/communities/${community.id}/categories/${categoryCreate.data.id}`, 'DELETE');
@@ -309,6 +323,7 @@ test('community membership, invite limits, roles and private channel permissions
   const freshCommunity = bootstrapAfterCategoryDelete.data.communities.find(item => item.id === community.id);
   assert.deepEqual(freshCommunity.categories, []);
   assert.equal(freshCommunity.channels.some(item => item.id === privateChannel.id), true);
+  assert.equal(freshCommunity.channels.find(item => item.id === privateChannel.id).categoryId, null);
   const cannotPromotePeer = await api(member.token, `/api/communities/${community.id}/members/${owner.user.id}`, 'PATCH', { roleId: 'admin' });
   assert.equal(cannotPromotePeer.response.status, 403);
 });
