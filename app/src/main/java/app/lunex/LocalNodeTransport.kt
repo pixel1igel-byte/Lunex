@@ -39,6 +39,7 @@ private const val FILE_CHUNK_BYTES = 24 * 1024
 private val CALL_EVENTS = setOf("call:invite", "call:accept", "call:signal", "call:reject", "call:end")
 
 internal data class LanPeer(val name: String, val host: InetAddress, val port: Int, val serviceName: String = name)
+internal data class LocalRoomPeer(val id: String, val name: String, val host: InetAddress, val port: Int)
 
 internal class LocalNodeTransport(
     context: Context,
@@ -116,18 +117,20 @@ internal class LocalNodeTransport(
         callSignalListener = listener
     }
 
+    fun roomPeers(roomId: String): List<LocalRoomPeer> =
+        peers.entries.toList()
+            .filter { store.isPeerInRoom(it.key, roomId) }
+            .map { LocalRoomPeer(it.key, it.value.name, it.value.host, it.value.port) }
+
     fun sendCallSignal(roomId: String, targetNodeId: String, event: String, payload: JSONObject, senderName: String) {
         if (roomId.isBlank() || targetNodeId.isBlank() || event !in CALL_EVENTS) return
         io.execute {
             val signalId = java.util.UUID.randomUUID().toString()
+            seenCallSignals[signalId] = System.currentTimeMillis()
             val localId = store.serverId()
-            val members = peers.entries.toList().filter { entry ->
-                entry.key != targetNodeId && store.isPeerInRoom(entry.key, roomId)
+            val recipients = peers.entries.toList().filter { entry ->
+                store.isPeerInRoom(entry.key, roomId)
             }
-            val target = peers[targetNodeId]
-            val recipients = if (target != null && store.isPeerInRoom(targetNodeId, roomId)) {
-                (members + peers.entries.firstOrNull { it.key == targetNodeId }!!).distinctBy { it.key }
-            } else members
             recipients.forEach { entry ->
                 val source = JSONObject()
                     .put("op", "call-signal")
