@@ -118,7 +118,9 @@ function App() {
     setLocalStream(null); setRemoteStream(null); setIncomingCall(null); setCallState('idle'); setCallMuted(false); setCameraOff(false);
   }
   async function createPeer(call, stream) {
-    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+    try { const response = await fetch(`${API}/api/call-config`, { headers: { Authorization: `Bearer ${token}` } }); if (response.ok) { const config = await response.json(); if (Array.isArray(config.iceServers) && config.iceServers.length) iceServers = config.iceServers; } } catch {}
+    const pc = new RTCPeerConnection({ iceServers });
     peerRef.current = pc;
     stream.getTracks().forEach(track => pc.addTrack(track, stream));
     pc.ontrack = event => setRemoteStream(event.streams[0]);
