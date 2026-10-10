@@ -13,10 +13,23 @@ import java.io.OutputStreamWriter
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.util.Base64
+import javax.crypto.Cipher
+import javax.crypto.Mac
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 
-internal data class LanPeer(val name: String, val host: InetAddress, val port: Int)
+private const val LUNEX_NODE_PORT = 45873
+private const val MAX_REQUEST_FRAME_CHARS = 65_536
+private const val MAX_RESPONSE_FRAME_CHARS = 24_000_000
+
+internal data class LanPeer(val name: String, val host: InetAddress, val port: Int, val serviceName: String = name)
 
 internal class LocalNodeTransport(
     context: Context,
@@ -28,7 +41,8 @@ internal class LocalNodeTransport(
     private val app = context.applicationContext
     private val nsd = app.getSystemService(Context.NSD_SERVICE) as NsdManager
     private val main = Handler(Looper.getMainLooper())
-    private val io = Executors.newCachedThreadPool()
+    @Volatile private var io = Executors.newCachedThreadPool()
+    @Volatile private var maintenance: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
     private val peers = ConcurrentHashMap<String, LanPeer>()
     @Volatile private var running = false
     @Volatile private var server: ServerSocket? = null
@@ -37,27 +51,43 @@ internal class LocalNodeTransport(
     private var port = 0
     private val serviceType = "_lunexnode._tcp."
 
+    @Synchronized
     fun start() {
         if (running) return
+        if (io.isShutdown) io = Executors.newCachedThreadPool()
+        if (maintenance.isShutdown) maintenance = Executors.newSingleThreadScheduledExecutor()
         running = true
         io.execute {
+            var listening: ServerSocket? = null
             try {
-                server = ServerSocket(0)
-                port = server!!.localPort
+                val socket = ServerSocket(LUNEX_NODE_PORT)
+                listening = socket
+                if (!running) {
+                    socket.close()
+                    return@execute
+                }
+                server = socket
+                port = socket.localPort
                 registerService()
                 while (running) {
-                    val client = server!!.accept()
+                    val client = socket.accept()
                     io.execute { handle(client) }
                 }
             } catch (e: Exception) {
                 if (running) main.post { onStatus("LAN-узел: ${e.message ?: "ошибка"}") }
+            } finally {
+                runCatching { listening?.close() }
             }
         }
         startDiscovery()
+        io.execute { reconnectKnownPeers() }
+        maintenance.scheduleWithFixedDelay({ if (running) reconnectKnownPeers() }, 30, 30, TimeUnit.SECONDS)
         main.post { onStatus("LAN-узел запущен. Поиск устройств в этой Wi-Fi сети…") }
     }
 
+    @Synchronized
     fun stop() {
+        if (!running) return
         running = false
         runCatching { discovery?.let { nsd.stopServiceDiscovery(it) } }
         runCatching { registration?.let { nsd.unregisterService(it) } }
@@ -67,30 +97,64 @@ internal class LocalNodeTransport(
         peers.clear()
         main.post { onPeersChanged(emptyList()) }
         io.shutdownNow()
+        maintenance.shutdownNow()
     }
 
     fun peers(): List<LanPeer> = peers.values.toList()
 
-    /** Current port; internet reachability may require router port forwarding. */
+    /** Current listening port; remote reachability still depends on the network/NAT. */
     fun listeningPort(): Int = port
+
+    /** Reachable addresses on this device's active network interfaces. */
+    fun localEndpoints(): List<String> {
+        val result = mutableListOf<String>()
+        val interfaces = runCatching { java.net.NetworkInterface.getNetworkInterfaces() }.getOrNull()
+            ?: return emptyList()
+        while (interfaces.hasMoreElements()) {
+            val networkInterface = interfaces.nextElement()
+            if (runCatching { !networkInterface.isUp || networkInterface.isLoopback }.getOrDefault(true)) continue
+            val addresses = networkInterface.inetAddresses
+            while (addresses.hasMoreElements()) {
+                val address = addresses.nextElement()
+                if (address.isLoopbackAddress || address.isLinkLocalAddress) continue
+                val host = if (address is java.net.Inet6Address) {
+                    "[" + address.hostAddress.substringBefore('%') + "]"
+                } else address.hostAddress
+                result += host + ":" + LUNEX_NODE_PORT
+            }
+        }
+        return result.distinct()
+    }
 
     fun join(peer: LanPeer, token: String, callback: (Boolean, String) -> Unit) {
         io.execute {
             try {
-                val response = request(peer, JSONObject().put("op", "join").put("token", token))
+                val hello = request(peer, JSONObject().put("op", "hello"))
+                if (!hello.optBoolean("ok") || hello.optString("nodeId").isBlank()) {
+                    throw IllegalStateException("По адресу не найден узел Lunex.")
+                }
+                require(hello.optString("nodeId") != store.serverId()) { "Нельзя подключиться к самому себе." }
+                val response = request(peer, JSONObject().put("op", "join").put("token", token).put("nodeId", store.serverId()))
                 if (!response.optBoolean("ok")) throw IllegalStateException(response.optString("error", "Приглашение не принято"))
                 val roomId = response.getString("roomId")
                 val roomName = response.optString("roomName", "Lunex room")
+                val namedPeer = peer.copy(name = hello.optString("name").ifBlank { peer.name })
+                peers[hello.getString("nodeId")] = namedPeer
+                store.rememberPeer(hello.getString("nodeId"), namedPeer.serviceName, endpointOf(namedPeer))
+                main.post { onPeersChanged(peers()) }
                 store.joinRoom(roomId, roomName, token)
-                sync(peer, roomId, token)
-                main.post { callback(true, "Комната «$roomName» подключена") }
+                store.rememberPeerRoom(hello.getString("nodeId"), roomId)
+                sync(peer, roomId)
+                discoverRoomMesh(namedPeer, roomId)
+                syncAll()
+                main.post { callback(true, "Комната «$roomName» подключена; узлы сети обнаружены и синхронизированы.") }
             } catch (e: Exception) {
                 main.post { callback(false, e.message ?: "Не удалось подключиться к узлу") }
             }
         }
     }
 
-    fun send(roomId: String, token: String, senderName: String, body: String) {
+    fun send(roomId: String, senderName: String, body: String) {
         val clean = body.trim().take(4000)
         if (clean.isBlank()) return
         val message = LocalNodeMessage(
@@ -99,41 +163,85 @@ internal class LocalNodeTransport(
         )
         store.addMessage(message)
         onMessage(message)
-        io.execute {
-            peers().forEach { peer ->
-                runCatching {
-                    request(peer, JSONObject().put("op", "message").put("token", token)
-                        .put("roomId", roomId).put("message", message.toJson()))
-                }
-            }
-        }
+        io.execute { relayToPeers(message, null) }
     }
 
     fun syncAll() {
         io.execute {
-            peers().forEach { peer ->
+            peers.entries.toList().forEach { entry ->
+                val peerId = entry.key
+                val peer = entry.value
                 store.rooms().forEach { room ->
-                    val token = store.inviteTokenForRoom(room.id) ?: return@forEach
-                    runCatching { sync(peer, room.id, token) }
+                    if (store.isPeerInRoom(peerId, room.id) && store.inviteTokensForRoom(room.id).isNotEmpty()) {
+                        runCatching { syncInvites(peer, room.id) }
+                        runCatching { pushHistoryToPeer(peer, room.id) }
+                        runCatching { sync(peer, room.id) }
+                    }
                 }
             }
         }
     }
 
-    private fun sync(peer: LanPeer, roomId: String, token: String) {
-        val response = request(peer, JSONObject().put("op", "sync").put("roomId", roomId).put("token", token))
-        val array = response.optJSONArray("messages") ?: return
+    private fun sync(peer: LanPeer, roomId: String) {
+        // A room can have several still-valid invitation tokens. Try each one
+        // because a destination may have joined using an older invitation.
+        var response: JSONObject? = null
+        for (token in store.inviteTokensForRoom(roomId)) {
+            val candidate = runCatching {
+                request(peer, JSONObject().put("op", "sync").put("roomId", roomId).put("token", token).put("nodeId", store.serverId()))
+            }.getOrNull()
+            if (candidate?.optBoolean("ok") == true) {
+                response = candidate
+                break
+            }
+        }
+        val array = response?.optJSONArray("messages") ?: return
+        val newlyInserted = mutableListOf<LocalNodeMessage>()
         for (i in 0 until array.length()) {
             val message = LocalNodeMessage.fromJson(array.getJSONObject(i))
-            if (store.addMessage(message)) main.post { onMessage(message) }
+            if (message.roomId != roomId || message.body.length > 4000 ||
+                message.id.length > 128 || message.senderName.length > 80) continue
+            // Sync is also a propagation path: a returning/offline node can bring
+            // older messages back into the mesh. Relay only newly inserted IDs.
+            if (store.addMessage(message)) {
+                main.post { onMessage(message) }
+                newlyInserted += message
+            }
         }
+        // Relay sequentially in this worker instead of scheduling one thread-pool
+        // task per historical message when a large history is synchronized.
+        newlyInserted.forEach { relayToPeers(it, peer.host) }
     }
 
     private fun handle(client: Socket) {
         client.use { socket ->
             socket.soTimeout = 10000
-            val line = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8)).readLine() ?: return
-            val request = JSONObject(line)
+            val line = readBoundedLine(BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8)), MAX_REQUEST_FRAME_CHARS) ?: return
+            val wireRequest = JSONObject(line)
+            if (!wireRequest.optBoolean("encrypted") &&
+                (wireRequest.optString("token").isNotBlank() || wireRequest.optString("authToken").isNotBlank())) {
+                PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true)
+                    .println(JSONObject().put("ok", false).put("error", "Room-authenticated frames must be encrypted").toString())
+                return
+            }
+            var responseToken: String? = null
+            val request = if (wireRequest.optBoolean("encrypted")) {
+                val keyId = wireRequest.optString("keyId")
+                val token = store.allInviteTokens().firstOrNull { tokenHash(it) == keyId }
+                if (token == null) {
+                    PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true)
+                        .println(JSONObject().put("ok", false).put("error", "Encrypted frame rejected").toString())
+                    return
+                }
+                try {
+                    responseToken = token
+                    decryptEnvelope(wireRequest, token)
+                } catch (_: Exception) {
+                    PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true)
+                        .println(JSONObject().put("ok", false).put("error", "Encrypted frame rejected").toString())
+                    return
+                }
+            } else wireRequest
             val response = try {
                 when (request.optString("op")) {
                     "hello" -> JSONObject().put("ok", true).put("nodeId", store.serverId()).put("name", android.os.Build.MODEL)
@@ -142,16 +250,75 @@ internal class LocalNodeTransport(
                         val roomId = store.roomForInvite(token)
                         val room = roomId?.let { store.room(it) }
                         if (room == null) JSONObject().put("ok", false).put("error", "Приглашение недействительно")
-                        else JSONObject().put("ok", true).put("roomId", room.id).put("roomName", room.name)
+                        else {
+                            rememberPeerRoomIfKnown(request.optString("nodeId"), room.id, socket.inetAddress)
+                            JSONObject().put("ok", true).put("roomId", room.id).put("roomName", room.name)
+                        }
+                    }
+                    "prove-room" -> {
+                        val roomId = request.optString("roomId")
+                        val challenge = request.optString("challenge")
+                        val proof = hexToBytes(request.optString("proof"))
+                        val valid = roomId.isNotBlank() && store.room(roomId) != null &&
+                            challenge.length in 16..128 && proof != null &&
+                            store.inviteTokensForRoom(roomId).any { token ->
+                                MessageDigest.isEqual(roomProof(token, roomId, challenge), proof)
+                            }
+                        if (valid) rememberPeerRoomIfKnown(request.optString("nodeId"), roomId, socket.inetAddress)
+                        JSONObject().put("ok", valid)
+                    }
+                    "peers" -> {
+                        val roomId = request.optString("roomId")
+                        val token = request.optString("token")
+                        if (store.roomForInvite(token) != roomId) {
+                            JSONObject().put("ok", false).put("error", "Нет доступа к комнате")
+                        } else {
+                            rememberPeerRoomIfKnown(request.optString("nodeId"), roomId, socket.inetAddress)
+                            val array = org.json.JSONArray()
+                            peers.forEach { (peerId, peer) ->
+                                if (peerId != store.serverId() && store.isPeerInRoom(peerId, roomId)) {
+                                    array.put(JSONObject()
+                                        .put("nodeId", peerId)
+                                        .put("name", peer.name)
+                                        .put("endpoint", endpointOf(peer)))
+                                }
+                            }
+                            JSONObject().put("ok", true).put("peers", array)
+                        }
+                    }
+                    "invite" -> {
+                        val roomId = request.optString("roomId")
+                        val authToken = request.optString("authToken")
+                        val inviteToken = request.optString("inviteToken")
+                        if (store.roomForInvite(authToken) != roomId || store.room(roomId) == null) {
+                            JSONObject().put("ok", false).put("error", "Нет доступа к комнате")
+                        } else {
+                            rememberPeerRoomIfKnown(request.optString("nodeId"), roomId, socket.inetAddress)
+                            val inserted = store.rememberInviteToken(roomId, inviteToken)
+                            if (inserted) {
+                                val sourceAddress = socket.inetAddress
+                                io.execute { relayInviteToPeers(roomId, inviteToken, sourceAddress) }
+                            }
+                            JSONObject().put("ok", true)
+                        }
                     }
                     "message" -> {
                         val token = request.optString("token")
                         val roomId = request.optString("roomId")
                         val message = LocalNodeMessage.fromJson(request.getJSONObject("message"))
-                        if (store.roomForInvite(token) != roomId || message.roomId != roomId) {
-                            JSONObject().put("ok", false).put("error", "Нет доступа к комнате")
+                        if (store.roomForInvite(token) != roomId || message.roomId != roomId ||
+                            message.body.length > 4000 || message.id.length > 128 || message.senderName.length > 80) {
+                            JSONObject().put("ok", false).put("error", "Нет доступа к комнате или сообщение некорректно")
                         } else {
-                            if (store.addMessage(message)) main.post { onMessage(message) }
+                            rememberPeerRoomIfKnown(request.optString("fromNodeId"), roomId, socket.inetAddress)
+                            // Deduplication is the loop guard: a node relays a message only
+                            // the first time it stores that message ID.
+                            val inserted = store.addMessage(message)
+                            if (inserted) {
+                                main.post { onMessage(message) }
+                                val sourceAddress = client.inetAddress
+                                io.execute { relayToPeers(message, sourceAddress) }
+                            }
                             JSONObject().put("ok", true).put("ack", message.id)
                         }
                     }
@@ -160,6 +327,7 @@ internal class LocalNodeTransport(
                         val roomId = request.optString("roomId")
                         if (store.roomForInvite(token) != roomId) JSONObject().put("ok", false).put("error", "Нет доступа к комнате")
                         else {
+                            rememberPeerRoomIfKnown(request.optString("nodeId"), roomId, socket.inetAddress)
                             val array = org.json.JSONArray()
                             store.messages(roomId).forEach { array.put(it.toJson()) }
                             JSONObject().put("ok", true).put("messages", array)
@@ -170,7 +338,247 @@ internal class LocalNodeTransport(
             } catch (e: Exception) {
                 JSONObject().put("ok", false).put("error", e.message ?: "Ошибка запроса")
             }
-            PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true).println(response.toString())
+            val wireResponse = responseToken?.let { encryptEnvelope(response, it) } ?: response
+            PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true).println(wireResponse.toString())
+        }
+    }
+
+    /**
+     * Forward newly accepted messages to the other discovered nodes.
+     *
+     * Every receiver checks the room invite and deduplicates by message ID before
+     * forwarding, so messages can cross multiple phone nodes without a central
+     * server and without an endless relay loop.
+     */
+    /** Propagate newly created room invite secrets using an already shared token. */
+    private fun relayInviteToPeers(roomId: String, inviteToken: String, sourceAddress: InetAddress?) {
+        peers.entries.toList().filter { entry ->
+            store.isPeerInRoom(entry.key, roomId) &&
+                (sourceAddress == null || !entry.value.host.address.contentEquals(sourceAddress.address))
+        }.forEach { entry ->
+            val peer = entry.value
+            for (authToken in store.inviteTokensForRoom(roomId)) {
+                val accepted = runCatching {
+                    request(peer, JSONObject()
+                        .put("op", "invite")
+                        .put("roomId", roomId)
+                        .put("authToken", authToken)
+                        .put("inviteToken", inviteToken)
+                        .put("nodeId", store.serverId()))
+                }.getOrNull()?.optBoolean("ok") == true
+                if (accepted) break
+            }
+        }
+    }
+
+    /** Bring all locally known invite tokens to a peer before message sync. */
+    private fun syncInvites(peer: LanPeer, roomId: String) {
+        val tokens = store.inviteTokensForRoom(roomId)
+        for (inviteToken in tokens) {
+            for (authToken in tokens) {
+                val accepted = runCatching {
+                    request(peer, JSONObject()
+                        .put("op", "invite")
+                        .put("roomId", roomId)
+                        .put("authToken", authToken)
+                        .put("inviteToken", inviteToken)
+                        .put("nodeId", store.serverId()))
+                }.getOrNull()?.optBoolean("ok") == true
+                if (accepted) break
+            }
+        }
+    }
+
+    private fun sendMessageToPeer(peer: LanPeer, message: LocalNodeMessage): Boolean {
+        for (token in store.inviteTokensForRoom(message.roomId)) {
+            val accepted = runCatching {
+                request(peer, JSONObject()
+                    .put("op", "message")
+                    .put("token", token)
+                    .put("roomId", message.roomId)
+                    .put("fromNodeId", store.serverId())
+                    .put("message", message.toJson()))
+            }.getOrNull()?.optBoolean("ok") == true
+            if (accepted) return true
+        }
+        return false
+    }
+
+    /** Push this node's saved history before pulling the peer's history. */
+    private fun pushHistoryToPeer(peer: LanPeer, roomId: String) {
+        store.messages(roomId).forEach { message ->
+            if (message.roomId == roomId && message.body.length <= 4000) {
+                sendMessageToPeer(peer, message)
+            }
+        }
+    }
+
+    private fun relayToPeers(message: LocalNodeMessage, sourceAddress: InetAddress?) {
+        peers.entries.toList().filter { entry ->
+            store.isPeerInRoom(entry.key, message.roomId) &&
+                (sourceAddress == null || !entry.value.host.address.contentEquals(sourceAddress.address))
+        }.forEach { entry -> sendMessageToPeer(entry.value, message) }
+    }
+
+    /**
+     * Walk peer lists learned from room-authorized nodes. This gives the mesh
+     * multi-hop discovery without a central directory; every candidate's endpoint
+     * is verified against its advertised node ID before being persisted.
+     */
+    private fun discoverRoomMesh(seedPeer: LanPeer, roomId: String) {
+        val roomTokens = store.inviteTokensForRoom(roomId)
+        if (roomTokens.isEmpty()) return
+        val queue = java.util.ArrayDeque<LanPeer>()
+        val visited = mutableSetOf<String>()
+        val queued = mutableSetOf<String>()
+        queue.add(seedPeer)
+        while (queue.isNotEmpty() && visited.size < 128) {
+            val current = queue.removeFirst()
+            val hello = runCatching { request(current, JSONObject().put("op", "hello")) }.getOrNull() ?: continue
+            val currentId = hello.optString("nodeId")
+            if (!hello.optBoolean("ok") || currentId.isBlank() || currentId == store.serverId() || !visited.add(currentId)) continue
+            queued.add(currentId)
+
+            var response: JSONObject? = null
+            for (token in roomTokens) {
+                val candidate = runCatching {
+                    request(current, JSONObject().put("op", "peers").put("roomId", roomId).put("token", token).put("nodeId", store.serverId()))
+                }.getOrNull()
+                if (candidate?.optBoolean("ok") == true) {
+                    store.rememberPeerRoom(currentId, roomId)
+                    response = candidate
+                    break
+                }
+            }
+            val list = response?.optJSONArray("peers") ?: continue
+            for (index in 0 until list.length()) {
+                val advertised = list.optJSONObject(index) ?: continue
+                val expectedId = advertised.optString("nodeId")
+                val endpoint = advertised.optString("endpoint")
+                if (expectedId.isBlank() || endpoint.isBlank() || expectedId == store.serverId() || expectedId in visited || !queued.add(expectedId)) continue
+                val candidatePeer = runCatching {
+                    parseEndpoint(endpoint, advertised.optString("name").ifBlank { endpoint })
+                }.getOrNull() ?: continue
+                val candidateHello = runCatching {
+                    request(candidatePeer, JSONObject().put("op", "hello"))
+                }.getOrNull() ?: continue
+                if (!candidateHello.optBoolean("ok") || candidateHello.optString("nodeId") != expectedId) continue
+                val isRoomMember = roomTokens.any { token ->
+                    runCatching { proveRoomMembership(candidatePeer, roomId, token) }.getOrDefault(false)
+                }
+                if (!isRoomMember) continue
+                val verified = candidatePeer.copy(name = candidateHello.optString("name").ifBlank { candidatePeer.name })
+                peers[expectedId] = verified
+                store.rememberPeer(expectedId, verified.serviceName, endpointOf(verified))
+                store.rememberPeerRoom(expectedId, roomId)
+                main.post { onPeersChanged(peers()) }
+                queue.addLast(verified)
+            }
+        }
+    }
+
+    private fun reconnectKnownPeers() {
+        store.knownPeers().forEach { saved ->
+            try {
+                val peer = parseEndpoint(saved.endpoint, saved.label)
+                val hello = request(peer, JSONObject().put("op", "hello"))
+                val actualId = hello.optString("nodeId")
+                if (hello.optBoolean("ok") && actualId == saved.peerId && actualId != store.serverId()) {
+                    val verified = peer.copy(name = hello.optString("name").ifBlank { saved.label })
+                    val newlyConnected = peers.put(actualId, verified) == null
+                    store.rememberPeer(actualId, verified.serviceName, endpointOf(verified))
+                    if (newlyConnected) {
+                        main.post { onPeersChanged(peers()) }
+                        store.rooms().forEach { room ->
+                            if (store.inviteTokensForRoom(room.id).isNotEmpty()) discoverRoomMesh(verified, room.id)
+                        }
+                    }
+                } else if (peers.remove(saved.peerId) != null) {
+                    main.post { onPeersChanged(peers()) }
+                }
+            } catch (_: Exception) {
+                if (peers.remove(saved.peerId) != null) main.post { onPeersChanged(peers()) }
+            }
+        }
+        // Poll reachable room peers as well as reconnecting stale ones. This is
+        // required for one-way Internet links where the remote phone cannot dial back.
+        syncAll()
+    }
+
+    private fun parseEndpoint(raw: String, label: String): LanPeer {
+        val value = raw.trim()
+        val host: String
+        val endpointPort: Int
+        if (value.startsWith("[")) {
+            val close = value.indexOf(']')
+            require(close > 1 && close + 2 < value.length && value[close + 1] == ':') {
+                "Некорректный сохранённый IPv6 endpoint."
+            }
+            host = value.substring(1, close)
+            endpointPort = value.substring(close + 2).toInt()
+        } else {
+            val split = value.lastIndexOf(':')
+            require(split > 0 && value.indexOf(':') == split) { "Некорректный сохранённый endpoint." }
+            host = value.substring(0, split)
+            endpointPort = value.substring(split + 1).toInt()
+        }
+        require(endpointPort in 1..65535) { "Некорректный порт сохранённого узла." }
+        return LanPeer(label, InetAddress.getByName(host), endpointPort)
+    }
+
+    /**
+     * Only trust a node ID for membership tracking when it matches a peer we
+     * already verified at the same source address. Direct Internet peers that
+     * cannot be dialed back still sync through their own periodic pulls.
+     */
+    private fun proveRoomMembership(peer: LanPeer, roomId: String, token: String): Boolean {
+        val challenge = java.util.UUID.randomUUID().toString()
+        val proof = roomProof(token, roomId, challenge).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val response = request(peer, JSONObject()
+            .put("op", "prove-room")
+            .put("roomId", roomId)
+            .put("challenge", challenge)
+            .put("proof", proof)
+            .put("nodeId", store.serverId()))
+        return response.optBoolean("ok")
+    }
+
+    private fun roomProof(token: String, roomId: String, challenge: String): ByteArray {
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(token.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+        return mac.doFinal((roomId + ":" + challenge).toByteArray(Charsets.UTF_8))
+    }
+
+    private fun hexToBytes(value: String): ByteArray? {
+        if (value.length != 64 || !value.matches(Regex("[0-9a-fA-F]{64}"))) return null
+        return ByteArray(32) { index ->
+            value.substring(index * 2, index * 2 + 2).toInt(16).toByte()
+        }
+    }
+
+    private fun rememberPeerRoomIfKnown(peerId: String, roomId: String, sourceAddress: InetAddress) {
+        if (peerId.isBlank() || peerId == store.serverId()) return
+        val known = peers[peerId] ?: return
+        if (known.host.address.contentEquals(sourceAddress.address)) {
+            store.rememberPeerRoom(peerId, roomId)
+        }
+    }
+
+    private fun endpointOf(peer: LanPeer): String {
+        val host = if (peer.host is java.net.Inet6Address) {
+            "[" + peer.host.hostAddress.substringBefore('%') + "]"
+        } else peer.host.hostAddress
+        return host + ":" + peer.port
+    }
+
+    private fun readBoundedLine(reader: BufferedReader, maxChars: Int): String? {
+        val line = StringBuilder()
+        while (true) {
+            val value = reader.read()
+            if (value == -1) return if (line.length == 0) null else line.toString().removeSuffix("\r")
+            if (value == '\n'.code) return line.toString().removeSuffix("\r")
+            if (line.length >= maxChars) throw IllegalArgumentException("Слишком большой сетевой кадр.")
+            line.append(value.toChar())
         }
     }
 
@@ -178,12 +586,48 @@ internal class LocalNodeTransport(
         Socket().use { socket ->
             socket.connect(java.net.InetSocketAddress(peer.host, peer.port), 4000)
             socket.soTimeout = 6000
-            PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true).println(payload.toString())
-            val line = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8)).readLine()
+            val tokenValue = payload.optString("token").ifBlank { payload.optString("authToken") }
+            val secret = tokenValue.takeIf { it.isNotBlank() }
+            val wirePayload = secret?.let { encryptEnvelope(payload, it) } ?: payload
+            PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true).println(wirePayload.toString())
+            val line = readBoundedLine(BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8)), MAX_RESPONSE_FRAME_CHARS)
                 ?: throw IllegalStateException("Узел не ответил")
-            return JSONObject(line)
+            val wireResponse = JSONObject(line)
+            return if (wireResponse.optBoolean("encrypted")) {
+                val key = secret ?: throw IllegalStateException("Неожиданный зашифрованный ответ.")
+                decryptEnvelope(wireResponse, key)
+            } else wireResponse
         }
     }
+
+    /** Encrypts every room-authenticated request/response with AES-GCM using the shared room invite secret. */
+    private fun encryptEnvelope(payload: JSONObject, token: String): JSONObject {
+        val nonce = ByteArray(12).also { SecureRandom().nextBytes(it) }
+        val key = MessageDigest.getInstance("SHA-256").digest(token.toByteArray(Charsets.UTF_8))
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
+        val encrypted = cipher.doFinal(payload.toString().toByteArray(Charsets.UTF_8))
+        return JSONObject()
+            .put("encrypted", true)
+            .put("keyId", tokenHash(token))
+            .put("nonce", Base64.getUrlEncoder().withoutPadding().encodeToString(nonce))
+            .put("ciphertext", Base64.getUrlEncoder().withoutPadding().encodeToString(encrypted))
+    }
+
+    private fun decryptEnvelope(envelope: JSONObject, token: String): JSONObject {
+        require(envelope.optString("keyId") == tokenHash(token)) { "Неверный ключ кадра." }
+        val nonce = Base64.getUrlDecoder().decode(envelope.getString("nonce"))
+        require(nonce.size == 12) { "Некорректный nonce." }
+        val encrypted = Base64.getUrlDecoder().decode(envelope.getString("ciphertext"))
+        val key = MessageDigest.getInstance("SHA-256").digest(token.toByteArray(Charsets.UTF_8))
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
+        return JSONObject(String(cipher.doFinal(encrypted), Charsets.UTF_8))
+    }
+
+    private fun tokenHash(token: String): String =
+        MessageDigest.getInstance("SHA-256").digest(token.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
 
     private fun registerService() {
         val info = NsdServiceInfo().apply {
@@ -216,8 +660,14 @@ internal class LocalNodeTransport(
                         io.execute {
                             val hello = runCatching { request(peer, JSONObject().put("op", "hello")) }.getOrNull()
                             if (hello?.optBoolean("ok") == true && hello.optString("nodeId") != store.serverId()) {
-                                peers[hello.optString("nodeId")] = peer
+                                val peerId = hello.optString("nodeId")
+                                val verifiedPeer = peer.copy(name = hello.optString("name").ifBlank { peer.name })
+                                peers[peerId] = verifiedPeer
+                                store.rememberPeer(peerId, verifiedPeer.serviceName, endpointOf(verifiedPeer))
                                 main.post { onPeersChanged(peers()) }
+                                store.rooms().forEach { room ->
+                                    if (store.inviteTokensForRoom(room.id).isNotEmpty()) discoverRoomMesh(verifiedPeer, room.id)
+                                }
                                 syncAll()
                             }
                         }
@@ -225,7 +675,7 @@ internal class LocalNodeTransport(
                 })
             }
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                peers.entries.removeIf { it.value.name == serviceInfo.serviceName }
+                peers.entries.removeIf { it.value.serviceName == serviceInfo.serviceName }
                 main.post { onPeersChanged(peers()) }
             }
             override fun onDiscoveryStopped(serviceType: String) {}

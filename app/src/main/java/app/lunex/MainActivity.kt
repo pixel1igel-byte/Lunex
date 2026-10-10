@@ -72,6 +72,18 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent { LunexApp() }
     }
+
+    override fun onStart() {
+        super.onStart()
+        // A node exists while the app is in use; its room/message data remains in
+        // SQLite when the app is backgrounded and the network sockets are paused.
+        LocalNodeRuntime.ensure(this)
+    }
+
+    override fun onStop() {
+        LocalNodeRuntime.pause()
+        super.onStop()
+    }
 }
 
 private suspend fun request(base: String, path: String, method: String = "GET", token: String? = null, body: JSONObject? = null): JSONObject {
