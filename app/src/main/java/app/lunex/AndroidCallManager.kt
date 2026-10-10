@@ -153,6 +153,8 @@ internal class AndroidCallManager(
         }
     }
 
+    fun currentPeerId(): String = targetUserId
+
     fun bindLocal(transport: LocalNodeTransport, roomId: String, nodeId: String, displayName: String) {
         socket = null
         localTransport?.setCallSignalListener(null)
