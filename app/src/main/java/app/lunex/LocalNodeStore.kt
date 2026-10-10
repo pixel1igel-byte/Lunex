@@ -24,6 +24,13 @@ internal data class LocalRoom(
     val createdAt: Long
 )
 
+internal data class StoredNodePeer(
+    val peerId: String,
+    val label: String,
+    val endpoint: String,
+    val lastSeen: Long
+)
+
 /**
  * The device's durable node identity and local account database.
  *
@@ -239,11 +246,91 @@ internal class LocalNodeStore(context: Context) :
         } finally { writableDatabase.endTransaction() }
     }
 
+    /** Register an invitation token received from an authenticated peer. */
+    @Synchronized
+    fun rememberInviteToken(roomId: String, token: String): Boolean {
+        require(token.length in 32..128) { "Ключ приглашения повреждён." }
+        require(room(roomId) != null) { "Комната не найдена." }
+        val digest = MessageDigest.getInstance("SHA-256").digest(token.toByteArray(Charsets.UTF_8))
+        val hash = digest.joinToString("") { "%02x".format(it) }
+        writableDatabase.beginTransaction()
+        try {
+            val inserted = writableDatabase.insertWithOnConflict(
+                "invites", null,
+                ContentValues().apply {
+                    put("token_hash", hash)
+                    put("room_id", roomId)
+                    put("created_at", System.currentTimeMillis())
+                    put("revoked", 0)
+                },
+                SQLiteDatabase.CONFLICT_IGNORE
+            ) != -1L
+            writableDatabase.insertWithOnConflict(
+                "room_tokens", null,
+                ContentValues().apply {
+                    put("room_id", roomId)
+                    put("token", token)
+                    put("created_at", System.currentTimeMillis())
+                },
+                SQLiteDatabase.CONFLICT_IGNORE
+            )
+            writableDatabase.setTransactionSuccessful()
+            return inserted
+        } finally {
+            writableDatabase.endTransaction()
+        }
+    }
+
     @Synchronized
     fun inviteTokenForRoom(roomId: String): String? {
         readableDatabase.rawQuery("SELECT token FROM room_tokens WHERE room_id = ? ORDER BY created_at DESC LIMIT 1", arrayOf(roomId)).use {
             return if (it.moveToFirst()) it.getString(0) else null
         }
+    }
+
+    /** All locally held invite secrets for a room, newest first. Different peers
+     * may have joined through different invitations, so mesh operations must try
+     * a token that the destination actually recognizes. */
+    @Synchronized
+    fun inviteTokensForRoom(roomId: String): List<String> {
+        val tokens = mutableListOf<String>()
+        readableDatabase.rawQuery(
+            "SELECT token FROM room_tokens WHERE room_id = ? ORDER BY created_at DESC",
+            arrayOf(roomId)
+        ).use { cursor ->
+            while (cursor.moveToNext()) tokens += cursor.getString(0)
+        }
+        return tokens.distinct()
+    }
+
+    /** Persist a peer endpoint so the node can try to reconnect after an app restart. */
+    @Synchronized
+    fun rememberPeer(peerId: String, label: String, endpoint: String) {
+        require(peerId.isNotBlank() && endpoint.isNotBlank()) { "Некорректный узел." }
+        writableDatabase.insertWithOnConflict(
+            "peers", null,
+            ContentValues().apply {
+                put("peer_id", peerId)
+                put("label", label.take(100))
+                put("endpoint", endpoint.take(300))
+                put("last_seen", System.currentTimeMillis())
+            },
+            SQLiteDatabase.CONFLICT_REPLACE
+        )
+    }
+
+    @Synchronized
+    fun knownPeers(): List<StoredNodePeer> {
+        val result = mutableListOf<StoredNodePeer>()
+        readableDatabase.rawQuery(
+            "SELECT peer_id, label, endpoint, last_seen FROM peers WHERE endpoint != '' ORDER BY last_seen DESC",
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                result += StoredNodePeer(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getLong(3))
+            }
+        }
+        return result
     }
 
     @Synchronized
