@@ -58,9 +58,20 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
         transport.start()
         onDispose { transport.stop() }
     }
+    val localEndpoints = remember(transport) { transport.localEndpoints() }
     Column(Modifier.fillMaxSize().background(Color(0xFF0D0B16)).padding(18.dp)) {
         Text("LUNEX · LOCAL NODE", color = Color(0xFFB56BFF), fontSize = 22.sp, fontWeight = FontWeight.Black)
         Text("ID узла: " + store.serverId(), color = Color(0xFFAAA0BC), fontSize = 12.sp)
+        Text("Порт TCP: 45873", color = Color(0xFFAAA0BC), fontSize = 12.sp)
+        Text("Адреса этого телефона:", color = Color(0xFFAAA0BC), fontSize = 12.sp)
+        Text(localEndpoints.joinToString("\n").ifBlank { "Активные IP-адреса пока не найдены." }, color = Color.White, fontSize = 11.sp)
+        if (localEndpoints.isNotEmpty()) {
+            TextButton(onClick = {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Lunex node endpoints", localEndpoints.joinToString("\n")))
+                status = "Адреса узла скопированы."
+            }) { Icon(Icons.Default.ContentCopy, contentDescription = null); Text("Скопировать адреса") }
+        }
         if (!loggedIn) {
             Spacer(Modifier.height(20.dp))
             Text(if (isRegister) "Создать аккаунт на телефоне" else "Войти в локальный аккаунт", color = Color.White, fontSize = 18.sp)
