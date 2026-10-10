@@ -130,7 +130,7 @@ internal class LocalNodeTransport(
         }
     }
 
-    fun send(roomId: String, token: String, senderName: String, body: String) {
+    fun send(roomId: String, senderName: String, body: String) {
         val clean = body.trim().take(4000)
         if (clean.isBlank()) return
         val message = LocalNodeMessage(
