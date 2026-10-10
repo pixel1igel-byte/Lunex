@@ -173,7 +173,7 @@ private fun LunexApp() {
             onIncoming = { event -> android.os.Handler(android.os.Looper.getMainLooper()).post { incomingCall = event; callMode = event.optString("mode", "audio") } },
             onState = { state -> android.os.Handler(android.os.Looper.getMainLooper()).post {
                 callState = if (state in setOf("ended", "rejected", "failed")) "idle" else state
-                if (state in setOf("ended", "rejected", "failed", "idle")) incomingCall = null
+                if (state in setOf("connecting", "connected", "ended", "rejected", "failed", "idle")) incomingCall = null
                 if (state == "ended") notice = "Собеседник завершил звонок."
                 if (state == "rejected") notice = "Собеседник отклонил звонок."
             } },
