@@ -8,7 +8,7 @@ on:
       - 'Lunex-MVP/**'
       - '.github/workflows/test-android-webrtc.yml'
 concurrency:
-  group: native-webrtc-${{ github.ref }}
+  group: native-webrtc-${{ github.run_id }}
   cancel-in-progress: true
 permissions:
   contents: read
