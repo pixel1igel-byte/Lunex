@@ -163,6 +163,7 @@ internal class LocalNodeTransport(
                 store.rooms().forEach { room ->
                     if (store.inviteTokensForRoom(room.id).isNotEmpty()) {
                         runCatching { syncInvites(peer, room.id) }
+                        runCatching { pushHistoryToPeer(peer, room.id) }
                         runCatching { sync(peer, room.id) }
                     }
                 }
@@ -311,23 +312,33 @@ internal class LocalNodeTransport(
         }
     }
 
+    private fun sendMessageToPeer(peer: LanPeer, message: LocalNodeMessage): Boolean {
+        for (token in store.inviteTokensForRoom(message.roomId)) {
+            val accepted = runCatching {
+                request(peer, JSONObject()
+                    .put("op", "message")
+                    .put("token", token)
+                    .put("roomId", message.roomId)
+                    .put("message", message.toJson()))
+            }.getOrNull()?.optBoolean("ok") == true
+            if (accepted) return true
+        }
+        return false
+    }
+
+    /** Push this node's saved history before pulling the peer's history. */
+    private fun pushHistoryToPeer(peer: LanPeer, roomId: String) {
+        store.messages(roomId).forEach { message ->
+            if (message.roomId == roomId && message.body.length <= 4000) {
+                sendMessageToPeer(peer, message)
+            }
+        }
+    }
+
     private fun relayToPeers(message: LocalNodeMessage, sourceAddress: InetAddress?) {
         peers().filterNot { peer ->
             sourceAddress != null && peer.host.address.contentEquals(sourceAddress.address)
-        }.forEach { peer ->
-            // Each peer may possess a different valid invite token for this room.
-            // Stop at the first token the destination accepts.
-            for (token in store.inviteTokensForRoom(message.roomId)) {
-                val accepted = runCatching {
-                    request(peer, JSONObject()
-                        .put("op", "message")
-                        .put("token", token)
-                        .put("roomId", message.roomId)
-                        .put("message", message.toJson()))
-                }.getOrNull()?.optBoolean("ok") == true
-                if (accepted) break
-            }
-        }
+        }.forEach { peer -> sendMessageToPeer(peer, message) }
     }
 
     private fun reconnectKnownPeers() {
