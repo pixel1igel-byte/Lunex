@@ -130,3 +130,10 @@ button:disabled{cursor:not-allowed}
 .notification-unread-dot{width:8px;height:8px;flex-shrink:0;border-radius:50%;background:var(--accent);margin:6px}
 
 .rail-notification-dot{position:absolute;right:8px;top:8px;width:7px;height:7px;border-radius:50%;background:#ff6b82;box-shadow:0 0 0 2px #0c0912}
+
+
+.attachment-chip{display:flex;align-items:center;gap:9px;max-width:100%;margin-top:8px;padding:9px 11px;border:1px solid var(--line);border-radius:11px;background:color-mix(in srgb,var(--accent) 9%,var(--panel));color:#f5efff;text-align:left}
+.attachment-chip>svg{color:var(--accent);flex-shrink:0}
+.attachment-chip span{font-size:12px;overflow-wrap:anywhere;min-width:0}
+.attachment-chip small{font-size:10px;color:var(--muted);white-space:nowrap}
+.attachment-chip:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
