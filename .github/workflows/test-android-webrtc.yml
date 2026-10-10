@@ -45,7 +45,7 @@ jobs:
           profile: pixel_2
           disable-animations: true
           script: |
-            set -euo pipefail
+            set -eu
             rm -f /tmp/lunex-browser-ready /tmp/lunex-android-e2e.json
             cd Lunex-MVP
             npm run server > /tmp/lunex-server.log 2>&1 &
