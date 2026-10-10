@@ -18,6 +18,10 @@ import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ChatBubbleOutline
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -53,6 +57,8 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
     var chatDraft by remember { mutableStateOf("") }
     var localMessages by remember { mutableStateOf(emptyList<LocalNodeMessage>()) }
     var roomFiles by remember { mutableStateOf(emptyList<LocalNodeFile>()) }
+    var settingsOpen by remember { mutableStateOf(false) }
+    var connectPanelOpen by remember { mutableStateOf(false) }
     val peers = nodeState.peers
     val transport = remember { LocalNodeRuntime.ensure(context) }
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -77,18 +83,47 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
     }
     val localEndpoints = remember(transport) { transport.localEndpoints() }
     val shownStatus = status.ifBlank { nodeState.status }
-    Column(Modifier.fillMaxSize().background(Color(0xFF0D0B16)).padding(18.dp)) {
-        Text("LUNEX · LOCAL NODE", color = Color(0xFFB56BFF), fontSize = 22.sp, fontWeight = FontWeight.Black)
-        Text("ID узла: " + store.serverId(), color = Color(0xFFAAA0BC), fontSize = 12.sp)
-        Text("Порт TCP: 45873", color = Color(0xFFAAA0BC), fontSize = 12.sp)
-        Text("Адреса этого телефона:", color = Color(0xFFAAA0BC), fontSize = 12.sp)
-        Text(localEndpoints.joinToString("\n").ifBlank { "Активные IP-адреса пока не найдены." }, color = Color.White, fontSize = 11.sp)
-        if (localEndpoints.isNotEmpty()) {
-            TextButton(onClick = {
-                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                clipboard.setPrimaryClip(ClipData.newPlainText("Lunex node endpoints", localEndpoints.joinToString("\n")))
-                status = "Адреса узла скопированы."
-            }) { Icon(Icons.Default.ContentCopy, contentDescription = null); Text("Скопировать адреса") }
+    Column(Modifier.fillMaxSize().background(Color(0xFF0D0B16))) {
+        Row(
+            Modifier.fillMaxWidth().background(Color(0xFF191426)).padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+        ) {
+            Surface(shape = androidx.compose.foundation.shape.CircleShape, color = Color(0xFFB56BFF), modifier = Modifier.size(42.dp)) {
+                Box(contentAlignment = androidx.compose.ui.Alignment.Center) {
+                    Text("L", color = Color(0xFF0D0B16), fontSize = 24.sp, fontWeight = FontWeight.Black)
+                }
+            }
+            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                Text("Lunex", color = Color.White, fontSize = 23.sp, fontWeight = FontWeight.Bold)
+                Text(if (loggedIn) "Вы вошли как $activeName" else "Личные сообщения и комнаты", color = Color(0xFFAAA0BC), fontSize = 12.sp)
+            }
+            if (loggedIn) {
+                IconButton(onClick = { connectPanelOpen = !connectPanelOpen }) {
+                    Icon(Icons.Default.Add, contentDescription = "Подключить комнату", tint = Color(0xFFB56BFF))
+                }
+                IconButton(onClick = { settingsOpen = !settingsOpen }) {
+                    Icon(Icons.Default.Settings, contentDescription = "Настройки", tint = Color(0xFFB56BFF))
+                }
+            }
+        }
+        if (settingsOpen && loggedIn) {
+            Surface(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), color = Color(0xFF191426), shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Настройки устройства", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text("Узел Lunex работает автоматически", color = Color(0xFFAAA0BC), fontSize = 13.sp)
+                    Text("ID: " + store.serverId(), color = Color(0xFFAAA0BC), fontSize = 11.sp)
+                    Text("TCP-порт: 45873", color = Color(0xFFAAA0BC), fontSize = 11.sp)
+                    Text(localEndpoints.joinToString("\n").ifBlank { "Адреса устройства пока недоступны" }, color = Color.White, fontSize = 11.sp)
+                    if (localEndpoints.isNotEmpty()) TextButton(onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Lunex node endpoints", localEndpoints.joinToString("\n")))
+                        status = "Адреса устройства скопированы."
+                    }) { Icon(Icons.Default.ContentCopy, contentDescription = null); Text("Скопировать адреса устройства") }
+                    Text("Подключённых устройств: ${peers.size}", color = Color(0xFFAAA0BC), fontSize = 12.sp)
+                    peers.forEach { peer -> Text("${peer.name} · ${peer.host.hostAddress}:${peer.port}", color = Color(0xFFAAA0BC), fontSize = 11.sp) }
+                    TextButton(onClick = { settingsOpen = false }) { Text("Готово") }
+                }
+            }
         }
         if (!loggedIn) {
             Spacer(Modifier.height(20.dp))
@@ -103,10 +138,16 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
             TextButton(onClick = { isRegister = !isRegister; status = "" }) { Text(if (isRegister) "Уже есть аккаунт? Войти" else "Создать аккаунт") }
             Text("Учётная запись хранится в базе SQLite на этом телефоне; пароль проверяется локально.", color = Color(0xFFAAA0BC), fontSize = 12.sp)
         } else {
-            Text("Вошли как " + activeName, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            Text("Узлы рядом или подключённые вручную: ${peers.size}", color = Color(0xFFAAA0BC), fontSize = 12.sp)
-            peers.forEach { peer -> Text("• ${peer.name} · ${peer.host.hostAddress}:${peer.port}", color = Color(0xFFAAA0BC), fontSize = 12.sp) }
-            OutlinedTextField(peerEndpoint, { peerEndpoint = it }, label = { Text("Адрес узла через интернет (IP:порт)") }, supportingText = { Text("Для прямого подключения узел должен быть доступен извне; может понадобиться проброс порта.") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Icon(Icons.Default.ChatBubbleOutline, contentDescription = null, tint = Color(0xFFB56BFF))
+                Text("  Чаты", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text("${rooms.size}", color = Color(0xFFAAA0BC), fontSize = 13.sp)
+            }
+            if (connectPanelOpen) {
+                Surface(Modifier.fillMaxWidth().padding(horizontal = 14.dp), color = Color(0xFF191426), shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Подключить устройство или комнату", color = Color.White, fontWeight = FontWeight.Bold)
+                        OutlinedTextField(peerEndpoint, { peerEndpoint = it }, label = { Text("Адрес устройства (IP:порт)") }, supportingText = { Text("Для прямого соединения адрес должен быть доступен из интернета.") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Button(onClick = {
                 try {
                     val endpoint = peerEndpoint.trim()
@@ -132,7 +173,7 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                     }
                 } catch (e: Exception) { status = e.message ?: "Неверный адрес узла." }
             }, modifier = Modifier.fillMaxWidth(), enabled = peerEndpoint.isNotBlank() && inviteToJoin.isNotBlank()) { Text("Подключиться напрямую") }
-            OutlinedTextField(inviteToJoin, { inviteToJoin = it }, label = { Text("Код/ссылка приглашения комнаты") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(inviteToJoin, { inviteToJoin = it }, label = { Text("Код/ссылка приглашения комнаты") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Button(onClick = {
                 val raw = inviteToJoin.trim()
                 val token = Regex("[?&]token=([^&]+)").find(raw)?.groupValues?.get(1)
@@ -159,8 +200,12 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                     tryPeer(0)
                 }
             }, modifier = Modifier.fillMaxWidth(), enabled = inviteToJoin.isNotBlank()) { Text("Подключиться к приглашению") }
-            OutlinedTextField(roomName, { roomName = it }, label = { Text("Название комнаты") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            Button(onClick = { try { selected = store.createRoom(roomName); rooms = store.rooms(); roomName = ""; invite = ""; status = "" } catch (e: Exception) { status = e.message ?: "Ошибка" } }, modifier = Modifier.fillMaxWidth()) { Text("Создать комнату") }
+                        OutlinedTextField(roomName, { roomName = it }, label = { Text("Название новой комнаты") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Button(onClick = { try { selected = store.createRoom(roomName); rooms = store.rooms(); roomName = ""; invite = ""; status = ""; connectPanelOpen = false } catch (e: Exception) { status = e.message ?: "Ошибка" } }, modifier = Modifier.fillMaxWidth()) { Text("Создать комнату") }
+                        TextButton(onClick = { connectPanelOpen = false }) { Text("Закрыть") }
+                    }
+                }
+            }
             LazyColumn(Modifier.weight(1f)) { items(rooms, key = { it.id }) { room ->
                 Row(Modifier.fillMaxWidth().clickable { selected = room; invite = ""; localMessages = store.messages(room.id); roomFiles = store.files(room.id) }.padding(8.dp)) {
                     Column(Modifier.weight(1f)) { Text(room.name, color = Color.White); Text("ID: " + room.id, color = Color(0xFFAAA0BC), fontSize = 10.sp) }
