@@ -105,6 +105,15 @@ private suspend fun request(base: String, path: String, method: String = "GET", 
     }
 }
 
+private fun responseDisplayName(response: JSONObject, fallback: String): String {
+    val userValue = response.opt("user")
+    return when (userValue) {
+        is JSONObject -> userValue.optString("displayName").ifBlank { userValue.optString("username").ifBlank { fallback } }
+        is String -> userValue.ifBlank { fallback }
+        else -> response.optString("displayName").ifBlank { response.optString("username").ifBlank { fallback } }
+    }
+}
+
 private suspend fun requestArray(base: String, path: String, token: String): JSONArray {
     return withContext(Dispatchers.IO) {
         val conn = (URL(base.trimEnd('/') + path).openConnection() as HttpURLConnection).apply {
@@ -324,7 +333,7 @@ private fun LunexApp() {
                                 if (register) payload.put("displayName", displayName.trim())
                                 val response = request(base, "/api/auth/${if (register) "register" else "login"}", "POST", body = payload)
                                 token = response.getString("token"); prefs.edit().putString("token", token).apply()
-                                currentName = response.getJSONObject("user").optString("displayName")
+                                currentName = responseDisplayName(response, username.trim())
                                 val boot = request(base, "/api/bootstrap", token = token)
                                 val arr = boot.optJSONArray("communities") ?: JSONArray()
                                 communities = (0 until arr.length()).map { i ->
