@@ -28,8 +28,9 @@ import kotlinx.coroutines.withContext
 @Composable
 internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
     val context = LocalContext.current
-    val store = remember { LocalNodeStore(context) }
+    val store = remember { LocalNodeRuntime.store(context) }
     val scope = rememberCoroutineScope()
+    val nodeState by LocalNodeRuntime.state.collectAsState()
     var username by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -44,20 +45,17 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
     var inviteToJoin by remember { mutableStateOf("") }
     var peerEndpoint by remember { mutableStateOf("") }
     var chatDraft by remember { mutableStateOf("") }
-    var peers by remember { mutableStateOf(emptyList<LanPeer>()) }
     var localMessages by remember { mutableStateOf(emptyList<LocalNodeMessage>()) }
-    val transport = remember(store) {
-        LocalNodeTransport(context, store,
-            onPeersChanged = { peers = it },
-            onMessage = { msg -> if (selected?.id == msg.roomId) localMessages = store.messages(msg.roomId) },
-            onStatus = { status = it }
-        )
-    }
-    DisposableEffect(transport) {
-        transport.start()
-        onDispose { transport.stop() }
+    val peers = nodeState.peers
+    val transport = remember { LocalNodeRuntime.ensure(context) }
+    LaunchedEffect(nodeState.lastMessage?.id, selected?.id) {
+        val room = selected
+        if (room != null && nodeState.lastMessage?.roomId == room.id) {
+            localMessages = store.messages(room.id)
+        }
     }
     val localEndpoints = remember(transport) { transport.localEndpoints() }
+    val shownStatus = status.ifBlank { nodeState.status }
     Column(Modifier.fillMaxSize().background(Color(0xFF0D0B16)).padding(18.dp)) {
         Text("LUNEX · LOCAL NODE", color = Color(0xFFB56BFF), fontSize = 22.sp, fontWeight = FontWeight.Black)
         Text("ID узла: " + store.serverId(), color = Color(0xFFAAA0BC), fontSize = 12.sp)
@@ -183,6 +181,6 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
             }
             TextButton(onClick = { loggedIn = false; isRegister = false; selected = null; invite = "" }) { Text("Выйти") }
         }
-        if (status.isNotBlank()) Text(status, color = Color(0xFFFF8D9B), fontSize = 12.sp)
+        if (shownStatus.isNotBlank()) Text(shownStatus, color = Color(0xFFFF8D9B), fontSize = 12.sp)
     }
 }
