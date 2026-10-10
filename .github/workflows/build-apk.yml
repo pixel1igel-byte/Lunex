@@ -6,6 +6,7 @@ on:
     branches: [ main, master ]
     paths:
       - 'app/**'
+      - 'Lunex-MVP/**'
       - '*.gradle.kts'
       - 'gradle.properties'
       - '.github/workflows/build-apk.yml'
