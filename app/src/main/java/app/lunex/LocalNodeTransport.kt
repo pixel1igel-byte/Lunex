@@ -20,7 +20,7 @@ private const val LUNEX_NODE_PORT = 45873
 private const val MAX_REQUEST_FRAME_CHARS = 65_536
 private const val MAX_RESPONSE_FRAME_CHARS = 16_777_216
 
-internal data class LanPeer(val name: String, val host: InetAddress, val port: Int)
+internal data class LanPeer(val name: String, val host: InetAddress, val port: Int, val serviceName: String = name)
 
 internal class LocalNodeTransport(
     context: Context,
@@ -118,7 +118,7 @@ internal class LocalNodeTransport(
                 val roomName = response.optString("roomName", "Lunex room")
                 val namedPeer = peer.copy(name = hello.optString("name").ifBlank { peer.name })
                 peers[hello.getString("nodeId")] = namedPeer
-                store.rememberPeer(hello.getString("nodeId"), namedPeer.name, endpointOf(namedPeer))
+                store.rememberPeer(hello.getString("nodeId"), namedPeer.serviceName, endpointOf(namedPeer))
                 main.post { onPeersChanged(peers()) }
                 store.joinRoom(roomId, roomName, token)
                 sync(peer, roomId)
@@ -267,7 +267,7 @@ internal class LocalNodeTransport(
                 if (hello.optBoolean("ok") && actualId == saved.peerId && actualId != store.serverId()) {
                     val verified = peer.copy(name = hello.optString("name").ifBlank { saved.label })
                     peers[actualId] = verified
-                    store.rememberPeer(actualId, verified.name, endpointOf(verified))
+                    store.rememberPeer(actualId, verified.serviceName, endpointOf(verified))
                     main.post { onPeersChanged(peers()) }
                     syncAll()
                 }
@@ -359,7 +359,7 @@ internal class LocalNodeTransport(
                                 val peerId = hello.optString("nodeId")
                                 val verifiedPeer = peer.copy(name = hello.optString("name").ifBlank { peer.name })
                                 peers[peerId] = verifiedPeer
-                                store.rememberPeer(peerId, verifiedPeer.name, endpointOf(verifiedPeer))
+                                store.rememberPeer(peerId, verifiedPeer.serviceName, endpointOf(verifiedPeer))
                                 main.post { onPeersChanged(peers()) }
                                 syncAll()
                             }
@@ -368,7 +368,7 @@ internal class LocalNodeTransport(
                 })
             }
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                peers.entries.removeIf { it.value.name == serviceInfo.serviceName }
+                peers.entries.removeIf { it.value.serviceName == serviceInfo.serviceName }
                 main.post { onPeersChanged(peers()) }
             }
             override fun onDiscoveryStopped(serviceType: String) {}
