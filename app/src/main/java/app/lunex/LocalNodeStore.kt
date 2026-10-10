@@ -32,7 +32,7 @@ internal data class LocalRoom(
  * stable for this installation and is not the same as any room ID or invite token.
  */
 internal class LocalNodeStore(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, "lunex-node.db", null, 1) {
+    SQLiteOpenHelper(context.applicationContext, "lunex-node.db", null, 2) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -86,10 +86,13 @@ internal class LocalNodeStore(context: Context) :
             )""".trimIndent()
         )
         db.execSQL("CREATE INDEX idx_node_messages_room_time ON node_messages(room_id, created_at)")
+        db.execSQL("CREATE TABLE room_tokens (room_id TEXT NOT NULL, token TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(room_id, token))")
         ensureNode(db)
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) db.execSQL("CREATE TABLE IF NOT EXISTS room_tokens (room_id TEXT NOT NULL, token TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(room_id, token))")
+    }
 
     @Synchronized
     fun serverId(): String {
@@ -202,7 +205,64 @@ internal class LocalNodeStore(context: Context) :
         writableDatabase.insertOrThrow("invites", null, ContentValues().apply {
             put("token_hash", hash); put("room_id", roomId); put("created_at", System.currentTimeMillis())
         })
+        writableDatabase.insertWithOnConflict("room_tokens", null, ContentValues().apply {
+            put("room_id", roomId); put("token", token); put("created_at", System.currentTimeMillis())
+        }, SQLiteDatabase.CONFLICT_IGNORE)
         return token
+    }
+
+
+    @Synchronized
+    fun room(roomId: String): LocalRoom? {
+        readableDatabase.rawQuery("SELECT id, name, created_at FROM rooms WHERE id = ?", arrayOf(roomId)).use { c ->
+            return if (c.moveToFirst()) LocalRoom(c.getString(0), c.getString(1), c.getLong(2)) else null
+        }
+    }
+
+    @Synchronized
+    fun joinRoom(roomId: String, name: String, token: String) {
+        require(roomId.isNotBlank() && token.length in 32..128) { "Приглашение повреждено." }
+        writableDatabase.beginTransaction()
+        try {
+            writableDatabase.insertWithOnConflict("rooms", null, ContentValues().apply {
+                put("id", roomId); put("name", name.take(80).ifBlank { "Комната" }); put("created_at", System.currentTimeMillis())
+            }, SQLiteDatabase.CONFLICT_IGNORE)
+            val digest = MessageDigest.getInstance("SHA-256").digest(token.toByteArray(Charsets.UTF_8))
+            val hash = digest.joinToString("") { "%02x".format(it) }
+            writableDatabase.insertWithOnConflict("invites", null, ContentValues().apply {
+                put("token_hash", hash); put("room_id", roomId); put("created_at", System.currentTimeMillis())
+            }, SQLiteDatabase.CONFLICT_IGNORE)
+            writableDatabase.insertWithOnConflict("room_tokens", null, ContentValues().apply {
+                put("room_id", roomId); put("token", token); put("created_at", System.currentTimeMillis())
+            }, SQLiteDatabase.CONFLICT_IGNORE)
+            writableDatabase.setTransactionSuccessful()
+        } finally { writableDatabase.endTransaction() }
+    }
+
+    @Synchronized
+    fun inviteTokenForRoom(roomId: String): String? {
+        readableDatabase.rawQuery("SELECT token FROM room_tokens WHERE room_id = ? ORDER BY created_at DESC LIMIT 1", arrayOf(roomId)).use {
+            return if (it.moveToFirst()) it.getString(0) else null
+        }
+    }
+
+    @Synchronized
+    fun addMessage(message: LocalNodeMessage): Boolean {
+        val values = ContentValues().apply {
+            put("message_id", message.id); put("room_id", message.roomId)
+            put("sender_node_id", message.senderNodeId); put("sender_name", message.senderName)
+            put("body", message.body); put("created_at", message.createdAt); put("delivered", 1)
+        }
+        return writableDatabase.insertWithOnConflict("node_messages", null, values, SQLiteDatabase.CONFLICT_IGNORE) != -1L
+    }
+
+    @Synchronized
+    fun messages(roomId: String): List<LocalNodeMessage> {
+        val result = mutableListOf<LocalNodeMessage>()
+        readableDatabase.rawQuery("SELECT message_id, room_id, sender_node_id, sender_name, body, created_at FROM node_messages WHERE room_id = ? ORDER BY created_at LIMIT 1000", arrayOf(roomId)).use { c ->
+            while (c.moveToNext()) result += LocalNodeMessage(c.getString(0), c.getString(1), c.getString(2), c.getString(3), c.getString(4), c.getLong(5))
+        }
+        return result
     }
 
     @Synchronized
