@@ -309,7 +309,7 @@ function App() {
       <button className={`rail-item ${tab==='chats'?'active':''}`} title="Чаты" onClick={()=>{setTab('chats');setMobileNav(false)}}><MessageCircle/></button>
       <button className={`rail-item ${tab==='communities'?'active':''}`} title="Сообщества" onClick={()=>{setTab('communities');setMobileNav(false)}}><Users/></button>
       <button className={`rail-item ${tab==='calls'?'active':''}`} title="Звонки" onClick={()=>{setTab('calls');setMobileNav(false)}}><Phone/></button>
-      <button className={`rail-item ${tab==='notifications'?'active':''}`} title="Уведомления" onClick={()=>{setTab('notifications');setMobileNav(false)}}><Bell/></button>
+      <button className={`rail-item ${tab==='notifications'?'active':''}`} title="Уведомления" onClick={()=>{setTab('notifications');setMobileNav(false)}}><Bell/>{notifications.some(n=>!n.read)&&<span className="rail-notification-dot"/>}</button>
       <div className="rail-spacer"/>
       <button className="rail-item" title="Настройки" onClick={()=>{setSettingsOpen(true);setMobileNav(false)}}><Settings2/></button>
       <div className="rail-avatar">{user.slice(0,1).toUpperCase()}</div>
