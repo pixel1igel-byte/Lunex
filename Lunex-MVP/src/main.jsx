@@ -211,24 +211,29 @@ function App() {
   const visibleCommunities = communities.filter(c => `${c.name} ${c.description || ''} ${c.channels.map(ch => ch.name).join(' ')}`.toLowerCase().includes(searchTerm));
 
   function selectChannel(c, ch) { setActiveCommunity(c.id); setActiveChannel(ch.id); setTab('chats'); setMobileNav(false); setDm(null); }
-  function sendDm(e) { e?.preventDefault(); const text = dmDraft.trim(); if (!text || !dm) return; socket.emit('dm:send', { conversationId: dm.id, text }); setDmDraft(''); }
+  function sendDm(e) { e?.preventDefault(); const text = dmDraft.trim(); if (!text || !dm) return; if (!socket.connected) { setNotice('Нет соединения с сервером. Подожди подключения и отправь сообщение ещё раз.'); return; } socket.emit('dm:send', { conversationId: dm.id, text }); setDmDraft(''); }
   async function openDm(e) { e?.preventDefault(); const username = dmUsername.trim().replace(/^@/, ''); if (!username) return; try { const res = await fetch(`${API}/api/dms`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ username }) }); const data = await res.json(); if (!res.ok) { setNotice(data.error || 'Не удалось открыть чат.'); return; } setDms(prev => [data, ...prev.filter(c => c.id !== data.id)]); setDm(data); setActiveChannel(''); setNewDm(false); setDmUsername(''); setTab('chats'); } catch { setNotice('Сервер недоступен.'); } }
   function sendMessage(e) {
     e?.preventDefault();
     const text = draft.trim();
     if (!text || !user || !channel || channel.type === 'voice') return;
+    if (!socket.connected) { setNotice('Нет соединения с сервером. Подожди подключения и отправь сообщение ещё раз.'); return; }
     socket.emit('message:send', { channelId: activeChannel, user, text });
     setDraft('');
   }
   async function createCommunity() {
     const name = newName.trim(); if (!name) return;
-    const res = await fetch(`${API}/api/communities`, { method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`}, body:JSON.stringify({name}) });
-    if (res.ok) { const c = await res.json(); setActiveCommunity(c.id); setActiveChannel(c.channels[0].id); setNewCommunity(false); setNewName(''); setNotice('Сообщество создано.'); }
+    try { const res = await fetch(`${API}/api/communities`, { method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`}, body:JSON.stringify({name}) }); const data = await res.json().catch(()=>({}));
+      if (!res.ok) { setNotice(data.error || 'Не удалось создать сообщество.'); return; }
+      const c = data; setCommunities(prev => [...prev.filter(item=>item.id!==c.id),c]); setActiveCommunity(c.id); setActiveChannel(c.channels[0].id); setNewCommunity(false); setNewName(''); setNotice('Сообщество создано.');
+    } catch { setNotice('Сервер недоступен. Сообщество не создано.'); }
   }
   async function createChannel() {
     const name = newName.trim(); if (!name || !community) return;
-    const res = await fetch(`${API}/api/communities/${community.id}/channels`, { method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`}, body:JSON.stringify({name}) });
-    if (res.ok) { const ch = await res.json(); setActiveChannel(ch.id); setNewChannel(false); setNewName(''); setNotice('Канал создан.'); }
+    try { const res = await fetch(`${API}/api/communities/${community.id}/channels`, { method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`}, body:JSON.stringify({name}) }); const data = await res.json().catch(()=>({}));
+      if (!res.ok) { setNotice(data.error || 'Не удалось создать канал.'); return; }
+      const ch = data; setCommunities(prev=>prev.map(c=>c.id===community.id?{...c,channels:[...c.channels.filter(item=>item.id!==ch.id),ch]}:c)); setActiveChannel(ch.id); setNewChannel(false); setNewName(''); setNotice('Канал создан.');
+    } catch { setNotice('Сервер недоступен. Канал не создан.'); }
   }
   async function login(e) {
     e.preventDefault();
@@ -244,6 +249,7 @@ function App() {
     } catch { setNotice('Сервер недоступен. Запусти Lunex на хостинге или компьютере.'); }
   }
   async function logout() {
+    closeCall(true);
     try { await fetch(`${API}/api/auth/logout`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }); } catch {}
     socket.disconnect(); localStorage.removeItem('lunex-token'); setToken(''); setUser(''); setUserId(''); setCommunities([]); setMessages([]); setActiveChannel('');
   }
