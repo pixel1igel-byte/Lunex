@@ -16,6 +16,8 @@ import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
+private const val LUNEX_NODE_PORT = 45873
+
 internal data class LanPeer(val name: String, val host: InetAddress, val port: Int)
 
 internal class LocalNodeTransport(
@@ -42,7 +44,7 @@ internal class LocalNodeTransport(
         running = true
         io.execute {
             try {
-                server = ServerSocket(45873)
+                server = ServerSocket(LUNEX_NODE_PORT)
                 port = server!!.localPort
                 registerService()
                 while (running) {
@@ -89,7 +91,7 @@ internal class LocalNodeTransport(
                 val host = if (address is java.net.Inet6Address) {
                     "[" + address.hostAddress.substringBefore('%') + "]"
                 } else address.hostAddress
-                result += host + ":" + listeningPort()
+                result += host + ":" + LUNEX_NODE_PORT
             }
         }
         return result.distinct()
