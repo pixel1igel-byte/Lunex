@@ -42,6 +42,7 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
     var selected by remember { mutableStateOf<LocalRoom?>(null) }
     var invite by remember { mutableStateOf("") }
     var inviteToJoin by remember { mutableStateOf("") }
+    var peerEndpoint by remember { mutableStateOf("") }
     var chatDraft by remember { mutableStateOf("") }
     var peers by remember { mutableStateOf(emptyList<LanPeer>()) }
     var localMessages by remember { mutableStateOf(emptyList<LocalNodeMessage>()) }
@@ -75,7 +76,33 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
             Text("Вошли как " + activeName, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             Text("Устройства в этой Wi-Fi сети: ${peers.size}", color = Color(0xFFAAA0BC), fontSize = 12.sp)
             peers.forEach { peer -> Text("• ${peer.name}", color = Color(0xFFAAA0BC), fontSize = 12.sp) }
-            OutlinedTextField(inviteToJoin, { inviteToJoin = it }, label = { Text("Код приглашения другой комнаты") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(peerEndpoint, { peerEndpoint = it }, label = { Text("Адрес узла через интернет (IP:порт)") }, supportingText = { Text("Для прямого подключения узел должен быть доступен извне; может понадобиться проброс порта.") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Button(onClick = {
+                try {
+                    val endpoint = peerEndpoint.trim()
+                    val split = endpoint.lastIndexOf(':')
+                    require(split > 0 && split < endpoint.lastIndex) { "Введи адрес в формате IP:порт." }
+                    val host = endpoint.substring(0, split).removePrefix("[").removeSuffix("]")
+                    val port = endpoint.substring(split + 1).toInt()
+                    require(port in 1..65535) { "Порт должен быть от 1 до 65535." }
+                    val peer = LanPeer("Direct $endpoint", java.net.InetAddress.getByName(host), port)
+                    val raw = inviteToJoin.trim()
+                    val token = Regex("[?&]token=([^&]+)").find(raw)?.groupValues?.get(1)?.let { java.net.URLDecoder.decode(it, "UTF-8") } ?: raw
+                    require(token.isNotBlank()) { "Вставь код приглашения комнаты." }
+                    status = "Подключаюсь к узлу $endpoint…"
+                    transport.join(peer, token) { ok, message ->
+                        status = message
+                        if (ok) {
+                            rooms = store.rooms()
+                            selected = rooms.lastOrNull()
+                            selected?.let { localMessages = store.messages(it.id) }
+                            peerEndpoint = ""
+                            inviteToJoin = ""
+                        }
+                    }
+                } catch (e: Exception) { status = e.message ?: "Неверный адрес узла." }
+            }, modifier = Modifier.fillMaxWidth(), enabled = peerEndpoint.isNotBlank() && inviteToJoin.isNotBlank()) { Text("Подключиться напрямую") }
+            OutlinedTextField(inviteToJoin, { inviteToJoin = it }, label = { Text("Код/ссылка приглашения комнаты") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Button(onClick = {
                 val raw = inviteToJoin.trim()
                 val token = Regex("[?&]token=([^&]+)").find(raw)?.groupValues?.get(1)
