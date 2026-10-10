@@ -24,6 +24,13 @@ internal data class LocalRoom(
     val createdAt: Long
 )
 
+internal data class StoredNodePeer(
+    val peerId: String,
+    val label: String,
+    val endpoint: String,
+    val lastSeen: Long
+)
+
 /**
  * The device's durable node identity and local account database.
  *
@@ -259,6 +266,36 @@ internal class LocalNodeStore(context: Context) :
             while (cursor.moveToNext()) tokens += cursor.getString(0)
         }
         return tokens.distinct()
+    }
+
+    /** Persist a peer endpoint so the node can try to reconnect after an app restart. */
+    @Synchronized
+    fun rememberPeer(peerId: String, label: String, endpoint: String) {
+        require(peerId.isNotBlank() && endpoint.isNotBlank()) { "Некорректный узел." }
+        writableDatabase.insertWithOnConflict(
+            "peers", null,
+            ContentValues().apply {
+                put("peer_id", peerId)
+                put("label", label.take(100))
+                put("endpoint", endpoint.take(300))
+                put("last_seen", System.currentTimeMillis())
+            },
+            SQLiteDatabase.CONFLICT_REPLACE
+        )
+    }
+
+    @Synchronized
+    fun knownPeers(): List<StoredNodePeer> {
+        val result = mutableListOf<StoredNodePeer>()
+        readableDatabase.rawQuery(
+            "SELECT peer_id, label, endpoint, last_seen FROM peers WHERE endpoint != '' ORDER BY last_seen DESC",
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                result += StoredNodePeer(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getLong(3))
+            }
+        }
+        return result
     }
 
     @Synchronized
