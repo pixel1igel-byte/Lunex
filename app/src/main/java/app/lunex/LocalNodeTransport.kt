@@ -273,6 +273,7 @@ internal class LocalNodeTransport(
                 .put("sizeBytes", file.sizeBytes)
                 .put("sha256", file.sha256)
                 .put("chunkCount", file.chunkCount)
+                .put("createdAt", file.createdAt)
             val response = runCatching { request(peer, manifest) }.getOrNull() ?: continue
             if (response.optBoolean("ok")) {
                 if (response.optBoolean("already")) return true
@@ -425,8 +426,9 @@ internal class LocalNodeTransport(
                         if (!valid) {
                             JSONObject().put("ok", false).put("error", "Некорректный манифест файла.")
                         } else {
+                            val validFileId = fileId ?: throw IllegalStateException("Некорректный ID файла.")
                             rememberPeerRoomIfKnown(request.optString("nodeId"), roomId, socket.inetAddress)
-                            val existing = store.file(fileId!!)
+                            val existing = store.file(validFileId)
                             if (existing != null && (existing.roomId != roomId || existing.sizeBytes != size ||
                                 existing.sha256 != sha || existing.chunkCount != chunkCount)) {
                                 JSONObject().put("ok", false).put("error", "ID файла уже занят другими данными.")
@@ -435,13 +437,13 @@ internal class LocalNodeTransport(
                             } else {
                                 val directory = roomFilesDirectory(roomId)
                                 if (!directory.exists() && !directory.mkdirs()) throw IllegalStateException("Не удалось создать каталог файла.")
-                                val destination = File(directory, fileId)
+                                val destination = File(directory, validFileId)
                                 store.insertFile(LocalNodeFile(
-                                    fileId, roomId, senderId, senderName, fileName, mimeType,
+                                    validFileId, roomId, senderId, senderName, fileName, mimeType,
                                     size, sha, chunkCount, request.optLong("createdAt", System.currentTimeMillis()),
                                     destination.absolutePath, false
                                 ))
-                                val saved = store.file(fileId) ?: throw IllegalStateException("Не удалось сохранить манифест файла.")
+                                val saved = store.file(validFileId) ?: throw IllegalStateException("Не удалось сохранить манифест файла.")
                                 if (saved.roomId != roomId || saved.sha256 != sha || saved.sizeBytes != size) {
                                     JSONObject().put("ok", false).put("error", "Конфликт манифеста файла.")
                                 } else JSONObject().put("ok", true)
