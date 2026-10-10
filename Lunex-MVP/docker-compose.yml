@@ -1,0 +1,10 @@
+services:
+  lunex:
+    build: .
+    ports:
+      - "3001:3001"
+    volumes:
+      - lunex-data:/app/server
+    restart: unless-stopped
+volumes:
+  lunex-data:

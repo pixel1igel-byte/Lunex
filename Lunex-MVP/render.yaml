@@ -1,0 +1,19 @@
+# Render Blueprint: deploy the Lunex web app and Socket.IO server together.
+# The persistent disk is needed because this prototype stores data in a JSON file.
+services:
+  - type: web
+    name: lunex-messenger
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LUNEX_DATA_FILE
+        value: /var/data/data.json
+      - key: LUNEX_ALLOWED_ORIGINS
+        value: https://lunex-messenger.onrender.com
+    disk:
+      name: lunex-data
+      mountPath: /var/data
+      sizeGB: 1

@@ -1,13 +1,11 @@
-# Lunex for Android
+# Lunex
 
-Android Compose UI prototype for Lunex. The supplied artwork is installed as the Android launcher icon. Version 1.0.0.
+Lunex is a multi-client messenger project. The Android client is in the repository root; the web MVP and Node.js/Socket.IO server are in Lunex-MVP/.
 
-## Build an APK on GitHub
+## Android
+Open this repository in Android Studio or use GitHub Actions → Build Lunex APK.
 
-Upload the contents of this folder to a GitHub repository. Then open **Actions → Build Lunex APK → Run workflow**. When the run finishes, download the **Lunex-Android-APK** artifact, extract it, and install `app-debug.apk` on Android.
+## Web MVP
+See Lunex-MVP/README.md, Lunex-MVP/docs/DEPLOYMENT.md, and Lunex-MVP/docs/STATUS.md.
 
-This workflow creates a debug APK, not a Play Store signed release. Production distribution needs a private signing key and secure signing configuration.
-
-## Current scope
-
-This Android target is a UI prototype with a dark/purple theme, sample chats, community screens, and theme controls. It is not connected to a live backend and does not yet provide live messaging, calls, or end-to-end encryption.
+This repository includes an MVP, not a claim that every planned feature (including production-grade end-to-end encryption and anonymous routing) is complete.

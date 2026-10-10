@@ -1,0 +1,233 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { io } from 'socket.io-client';
+import {
+  MoonStar, Search, Plus, MessageCircle, Users, Phone, Bell, Settings2,
+  Hash, Volume2, ChevronDown, Send, Paperclip, Smile, Palette, Image as ImageIcon,
+  Type, Sparkles, Download, Upload, RotateCcw, Menu, X, ArrowLeft, Check,
+  SlidersHorizontal, PanelLeftClose, CircleHelp, ShieldCheck, Server, Headphones
+} from 'lucide-react';
+import './style.css';
+
+// In production the frontend and API share one HTTPS origin; local Vite uses port 3001.
+const API = import.meta.env.DEV ? 'http://localhost:3001' : location.origin;
+const socket = io(API, { autoConnect: false, auth: { token: localStorage.getItem('lunex-token') || '' } });
+const DEFAULT_THEME = {
+  accent: '#b56bff', background: '#100c19', panel: '#191426', wallpaper: '',
+  bubbleRadius: 18, fontSize: 14, transparency: 100, blur: 0, animations: true
+};
+
+function App() {
+  const [user, setUser] = useState('');
+  const [userId, setUserId] = useState('');
+  const [token, setToken] = useState(() => localStorage.getItem('lunex-token') || '');
+  const [authMode, setAuthMode] = useState('login');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authUsername, setAuthUsername] = useState('');
+  const [authLoading, setAuthLoading] = useState(true);
+  const [communities, setCommunities] = useState([]);
+  const [activeCommunity, setActiveCommunity] = useState('');
+  const [activeChannel, setActiveChannel] = useState('general');
+  const [messages, setMessages] = useState([]);
+  const [dms, setDms] = useState([]);
+  const [dmMessages, setDmMessages] = useState([]);
+  const [dmDraft, setDmDraft] = useState('');
+  const [draft, setDraft] = useState('');
+  const [tab, setTab] = useState('chats');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [mobileNav, setMobileNav] = useState(false);
+  const [chatSearch, setChatSearch] = useState('');
+  const [theme, setTheme] = useState(() => {
+    try { return { ...DEFAULT_THEME, ...JSON.parse(localStorage.getItem('lunex-theme') || '{}') }; }
+    catch { return DEFAULT_THEME; }
+  });
+  const [dm, setDm] = useState(null);
+  const [notice, setNotice] = useState('');
+  const [newCommunity, setNewCommunity] = useState(false);
+  const [newChannel, setNewChannel] = useState(false);
+  const [newDm, setNewDm] = useState(false);
+  const [dmUsername, setDmUsername] = useState('');
+  const [newName, setNewName] = useState('');
+  const [profileName, setProfileName] = useState('');
+  const bottomRef = useRef(null);
+  const fileRef = useRef(null);
+  const wallpaperRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!token) { setAuthLoading(false); return; }
+    const headers = { Authorization: `Bearer ${token}` };
+    fetch(`${API}/api/me`, { headers }).then(r => { if (!r.ok) throw new Error('session'); return r.json(); }).then(data => {
+      if (cancelled) return;
+      setUser(data.user.displayName); setUserId(data.user.id); socket.auth = { token }; if (!socket.connected) socket.connect();
+      return fetch(`${API}/api/bootstrap`, { headers }).then(r => r.json()).then(data => {
+        if (cancelled) return; setCommunities(data.communities || []);
+        const first = data.communities?.[0]; if (first) { setActiveCommunity(first.id); setActiveChannel(first.channels?.[0]?.id || 'general'); }
+        return fetch(`${API}/api/dms`, { headers }).then(r => r.ok ? r.json() : []).then(items => { if (!cancelled) setDms(items); });
+      });
+    }).catch(() => { if (!cancelled) { localStorage.removeItem('lunex-token'); setToken(''); setUser(''); setNotice('Сессия завершилась. Войди снова.'); } })
+      .finally(() => { if (!cancelled) setAuthLoading(false); });
+    socket.on('communities:changed', setCommunities);
+    socket.on('message:error', event => setNotice(event.error || 'Не удалось отправить сообщение.'));
+    return () => { cancelled = true; socket.off('communities:changed', setCommunities); socket.off('message:error'); };
+  }, [token]);
+
+  useEffect(() => {
+    if (!activeChannel) return;
+    fetch(`${API}/api/messages/${encodeURIComponent(activeChannel)}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : []).then(setMessages).catch(() => {});
+    socket.emit('channel:join', activeChannel);
+    const onNew = event => {
+      if (event.channelId === activeChannel) setMessages(prev => [...prev, event.message].slice(-500));
+    };
+    socket.on('message:new', onNew);
+    return () => socket.off('message:new', onNew);
+  }, [activeChannel, token]);
+
+  useEffect(() => {
+    if (!dm || !token) { setDmMessages([]); return; }
+    fetch(`${API}/api/dms/${encodeURIComponent(dm.id)}/messages`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : []).then(setDmMessages).catch(() => {});
+    socket.emit('dm:join', dm.id);
+    const onNew = event => { setDms(prev => prev.map(c => c.id === event.conversationId ? { ...c, lastMessage: event.message.text, time: event.message.time } : c)); if (event.conversationId === dm.id) setDmMessages(prev => [...prev, event.message].slice(-500)); };
+    socket.on('dm:new', onNew);
+    return () => socket.off('dm:new', onNew);
+  }, [dm?.id, token]);
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: theme.animations ? 'smooth' : 'auto' }); }, [messages, dmMessages, theme.animations]);
+  useEffect(() => {
+    localStorage.setItem('lunex-theme', JSON.stringify(theme));
+    document.documentElement.style.setProperty('--accent', theme.accent);
+    document.documentElement.style.setProperty('--app-bg', theme.background);
+    document.documentElement.style.setProperty('--panel', theme.panel);
+    document.documentElement.style.setProperty('--bubble-radius', `${theme.bubbleRadius}px`);
+    document.documentElement.style.setProperty('--font-size', `${theme.fontSize}px`);
+    document.documentElement.style.setProperty('--panel-alpha', `${theme.transparency / 100}`);
+    document.documentElement.style.setProperty('--panel-blur', `${theme.blur}px`);
+    document.documentElement.style.setProperty('--wallpaper', theme.wallpaper ? `url("${theme.wallpaper}")` : 'none');
+  }, [theme]);
+
+  const community = communities.find(c => c.id === activeCommunity) || communities[0];
+  const channel = community?.channels?.find(c => c.id === activeChannel);
+  const visibleDms = dms.filter(c => `${c.other?.displayName || ''} ${c.other?.username || ''} ${c.lastMessage || ''}`.toLowerCase().includes(chatSearch.toLowerCase()));
+
+  function selectChannel(c, ch) { setActiveCommunity(c.id); setActiveChannel(ch.id); setTab('chats'); setMobileNav(false); setDm(null); }
+  function sendDm(e) { e?.preventDefault(); const text = dmDraft.trim(); if (!text || !dm) return; socket.emit('dm:send', { conversationId: dm.id, text }); setDmDraft(''); }
+  async function openDm(e) { e?.preventDefault(); const username = dmUsername.trim().replace(/^@/, ''); if (!username) return; try { const res = await fetch(`${API}/api/dms`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ username }) }); const data = await res.json(); if (!res.ok) { setNotice(data.error || 'Не удалось открыть чат.'); return; } setDms(prev => [data, ...prev.filter(c => c.id !== data.id)]); setDm(data); setActiveChannel(''); setNewDm(false); setDmUsername(''); setTab('chats'); } catch { setNotice('Сервер недоступен.'); } }
+  function sendMessage(e) {
+    e?.preventDefault();
+    const text = draft.trim();
+    if (!text || !user || !channel || channel.type === 'voice') return;
+    socket.emit('message:send', { channelId: activeChannel, user, text });
+    setDraft('');
+  }
+  async function createCommunity() {
+    const name = newName.trim(); if (!name) return;
+    const res = await fetch(`${API}/api/communities`, { method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`}, body:JSON.stringify({name}) });
+    if (res.ok) { const c = await res.json(); setActiveCommunity(c.id); setActiveChannel(c.channels[0].id); setNewCommunity(false); setNewName(''); setNotice('Сообщество создано.'); }
+  }
+  async function createChannel() {
+    const name = newName.trim(); if (!name || !community) return;
+    const res = await fetch(`${API}/api/communities/${community.id}/channels`, { method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`}, body:JSON.stringify({name}) });
+    if (res.ok) { const ch = await res.json(); setActiveChannel(ch.id); setNewChannel(false); setNewName(''); setNotice('Канал создан.'); }
+  }
+  async function login(e) {
+    e.preventDefault();
+    const payload = authMode === 'register'
+      ? { username: authUsername, displayName: profileName, password: authPassword }
+      : { username: authUsername, password: authPassword };
+    try {
+      const response = await fetch(`${API}/api/auth/${authMode}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const data = await response.json();
+      if (!response.ok) { setNotice(data.error || 'Не удалось войти.'); return; }
+      localStorage.setItem('lunex-token', data.token); setToken(data.token); setUser(data.user.displayName); setUserId(data.user.id);
+      setAuthPassword(''); setAuthLoading(false);
+    } catch { setNotice('Сервер недоступен. Запусти Lunex на хостинге или компьютере.'); }
+  }
+  async function logout() {
+    try { await fetch(`${API}/api/auth/logout`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }); } catch {}
+    socket.disconnect(); localStorage.removeItem('lunex-token'); setToken(''); setUser(''); setUserId(''); setCommunities([]); setMessages([]); setActiveChannel('');
+  }
+  function changeTheme(key, value) { setTheme(prev => ({...prev, [key]: value})); }
+  function exportTheme() {
+    const blob = new Blob([JSON.stringify({ format:'lunex-theme', version:1, theme }, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'lunex-theme.json'; a.click(); URL.revokeObjectURL(url);
+  }
+  function importTheme(e) {
+    const file = e.target.files?.[0]; if (!file) return;
+    if (file.size > 2 * 1024 * 1024) { setNotice('Файл темы больше 2 МБ.'); return; }
+    const reader = new FileReader();
+    reader.onload = () => { try {
+      const parsed = JSON.parse(reader.result); if (parsed.format !== 'lunex-theme' || !parsed.theme) throw new Error();
+      setTheme({...DEFAULT_THEME, ...parsed.theme}); setNotice('Тема импортирована.');
+    } catch { setNotice('Не удалось прочитать файл темы.'); } };
+    reader.readAsText(file); e.target.value = '';
+  }
+  function chooseWallpaper(e) {
+    const file = e.target.files?.[0]; if (!file) return;
+    if (!file.type.startsWith('image/')) { setNotice('Выберите файл изображения.'); return; }
+    if (file.size > 4 * 1024 * 1024) { setNotice('Изображение должно быть меньше 4 МБ.'); return; }
+    const reader = new FileReader(); reader.onload = () => changeTheme('wallpaper', reader.result); reader.readAsDataURL(file); e.target.value = '';
+  }
+
+  if (authLoading) return <div className="login-wrap"><div className="login-card"><div className="brand-mark"><MoonStar size={34}/></div><h1>LUNEX</h1><p>Подключаем защищённую сессию…</p></div></div>;
+  if (!user) return <div className="login-wrap"><form className="login-card" onSubmit={login}><div className="brand-mark"><MoonStar size={34}/></div><h1>LUNEX</h1><p>Чаты и сообщества. Твоё пространство.</p><div className="auth-tabs"><button type="button" className={authMode==='login'?'picked':''} onClick={()=>setAuthMode('login')}>Войти</button><button type="button" className={authMode==='register'?'picked':''} onClick={()=>setAuthMode('register')}>Создать аккаунт</button></div><label>Логин</label><input autoComplete="username" required minLength="3" maxLength="24" value={authUsername} onChange={e=>setAuthUsername(e.target.value)} placeholder="например, lunex_user" />{authMode==='register' && <><label>Отображаемое имя</label><input autoComplete="nickname" required maxLength="32" value={profileName} onChange={e=>setProfileName(e.target.value)} placeholder="Как тебя будут видеть" /></>}<label>Пароль (минимум 10 символов)</label><input type="password" autoComplete={authMode==='register'?'new-password':'current-password'} required minLength={10} maxLength={128} value={authPassword} onChange={e=>setAuthPassword(e.target.value)} placeholder="Пароль" /><button className="primary wide" disabled={!authUsername.trim() || authPassword.length < 10 || (authMode==='register'&&!profileName.trim())}>{authMode==='register'?'Создать аккаунт':'Войти в Lunex'} <span>→</span></button><small>Аккаунты хранятся на сервере Lunex. Используй уникальный пароль.</small></form></div>;
+
+  return <div className="app-shell">
+    <aside className={`rail ${mobileNav ? 'show' : ''}`}>
+      <div className="rail-logo"><MoonStar size={24}/></div>
+      <button className={`rail-item ${tab==='chats'?'active':''}`} title="Чаты" onClick={()=>{setTab('chats');setMobileNav(false)}}><MessageCircle/></button>
+      <button className={`rail-item ${tab==='communities'?'active':''}`} title="Сообщества" onClick={()=>{setTab('communities');setMobileNav(false)}}><Users/></button>
+      <button className={`rail-item ${tab==='calls'?'active':''}`} title="Звонки" onClick={()=>{setTab('calls');setMobileNav(false)}}><Phone/></button>
+      <button className={`rail-item ${tab==='notifications'?'active':''}`} title="Уведомления" onClick={()=>{setTab('notifications');setMobileNav(false)}}><Bell/></button>
+      <div className="rail-spacer"/>
+      <button className="rail-item" title="Настройки" onClick={()=>{setSettingsOpen(true);setMobileNav(false)}}><Settings2/></button>
+      <div className="rail-avatar">{user.slice(0,1).toUpperCase()}</div>
+    </aside>
+
+    <aside className={`sidebar ${mobileNav ? 'show' : ''}`}>
+      <header className="sidebar-header"><div><div className="brand">LUNEX <span className="online-dot"/></div><div className="muted tiny">Твоё цифровое пространство</div></div><button className="icon-btn" onClick={()=>setNewCommunity(true)} title="Создать сообщество"><Plus/></button></header>
+      <div className="search-box"><Search size={16}/><input value={chatSearch} onChange={e=>setChatSearch(e.target.value)} placeholder="Поиск чатов и каналов"/></div>
+      {tab === 'chats' && <>
+        <div className="section-heading"><span>ЛИЧНЫЕ ЧАТЫ</span><button className="tiny-icon" title="Новый личный чат" onClick={()=>setNewDm(true)}><Plus size={15}/></button></div>
+        {visibleDms.map(c=><button key={c.id} className={`dm-row ${dm?.id===c.id?'selected':''}`} onClick={()=>{setDm(c);setActiveChannel('');setMobileNav(false)}}><div className="avatar">{(c.other?.displayName || '?').slice(0,1).toUpperCase()}</div><div className="row-main"><strong>{c.other?.displayName || 'Пользователь'}</strong><span>{c.lastMessage || `@${c.other?.username || ''}`}</span></div><small>{c.time ? new Date(c.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : ''}</small></button>)}
+        <div className="section-heading"><span>СООБЩЕСТВА</span><button className="tiny-icon" onClick={()=>setNewCommunity(true)}><Plus size={15}/></button></div>
+        {communities.map(c=><div key={c.id} className="community-block"><button className={`community-title ${activeCommunity===c.id?'chosen':''}`} onClick={()=>setActiveCommunity(c.id)}><span className="community-icon">{c.name.slice(0,1).toUpperCase()}</span><span>{c.name}</span><ChevronDown size={14}/></button>{(activeCommunity===c.id || tab==='communities') && c.channels.map(ch=><button key={ch.id} className={`channel-row ${activeChannel===ch.id?'chosen':''}`} onClick={()=>selectChannel(c,ch)}>{ch.type==='voice'?<Volume2 size={15}/>:<Hash size={15}/>}<span>{ch.name}</span></button>)}</div>)}
+        {community && <button className="add-channel" onClick={()=>setNewChannel(true)}><Plus size={15}/> Добавить канал</button>}
+      </>}
+      {tab === 'communities' && <div className="community-browser"><div className="section-label">ТВОИ СООБЩЕСТВА</div>{communities.map(c=><button className="browse-card" key={c.id} onClick={()=>{setActiveCommunity(c.id);setTab('chats')}}><div className="community-icon big">{c.name.slice(0,1)}</div><div><strong>{c.name}</strong><p>{c.description}</p><small>{c.channels.length} каналов</small></div></button>)}<button className="primary wide" onClick={()=>setNewCommunity(true)}><Plus size={16}/> Создать сообщество</button></div>}
+      {tab === 'calls' && <div className="empty-pane"><Phone/><h3>Звонки</h3><p>Голосовые и видеозвонки запланированы на следующий этап.</p></div>}
+      {tab === 'notifications' && <div className="empty-pane"><Bell/><h3>Уведомления</h3><p>Здесь будут упоминания и события сообществ.</p></div>}
+      <footer className="profile-footer"><div className="avatar self">{user.slice(0,1).toUpperCase()}</div><div className="row-main"><strong>{user}</strong><span>Аккаунт Lunex</span></div><button className="icon-btn" title="Выйти" onClick={logout}><ArrowLeft size={18}/></button><button className="icon-btn" title="Настройки" onClick={()=>setSettingsOpen(true)}><Settings2 size={18}/></button></footer>
+    </aside>
+
+    <main className="main-pane">
+      {dm ? <><header className="chat-header"><button className="mobile-menu" onClick={()=>setMobileNav(!mobileNav)}><Menu/></button><div className="avatar">{(dm.other?.displayName || '?').slice(0,1).toUpperCase()}</div><div className="channel-meta"><strong>{dm.other?.displayName || 'Личный чат'}</strong><span>@{dm.other?.username || ''} · личная переписка</span></div></header><div className="messages">{dmMessages.length===0 && <div className="date-divider"><span>НАЧАЛО ЛИЧНОЙ ПЕРЕПИСКИ</span></div>}{dmMessages.map(m=><article className={`message ${m.userId===userId?'own':''}`} key={m.id}><div className="avatar">{(m.user || '?').slice(0,1).toUpperCase()}</div><div className="message-body"><div className="message-heading"><strong>{m.user}</strong><time>{new Date(m.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</time></div><div className="bubble">{m.text}</div></div></article>)}<div ref={bottomRef}/></div><form className="composer" onSubmit={sendDm}><input value={dmDraft} onChange={e=>setDmDraft(e.target.value)} placeholder={`Сообщение для ${dm.other?.displayName || 'пользователя'}…`} maxLength={4000}/><button className="send-btn" disabled={!dmDraft.trim()} title="Отправить"><Send size={18}/></button></form></> :
+      tab === 'calls' || tab === 'notifications' ? <div className="chat-empty"><div className="empty-icon">{tab==='calls'?<Phone/>:<Bell/>}</div><h2>{tab==='calls'?'Звонки':'Уведомления'}</h2><p>{tab==='calls'?'Интерфейс звонков будет подключён после базовых чатов.':'Здесь появятся упоминания, ответы и события.'}</p></div> :
+      <><header className="chat-header"><button className="mobile-menu" onClick={()=>setMobileNav(!mobileNav)}><Menu/></button><div className="channel-hash">{channel?.type==='voice'?<Volume2/>:<Hash/>}</div><div className="channel-meta"><strong>{channel?.name || 'Выбери канал'}</strong><span>{community?.name || 'Сообщество'} · общий канал</span></div><div className="header-actions"><button className="icon-btn" title="Поиск"><Search/></button><button className="icon-btn" title="Настроить оформление" onClick={()=>setSettingsOpen(true)}><Palette/></button><button className="icon-btn" title="Участники"><Users/></button></div></header>
+        {channel?.type==='voice' ? <div className="chat-empty"><Headphones size={42}/><h2>{channel.name}</h2><p>Голосовой канал пока представлен как интерфейс. Передача аудио ещё не реализована.</p></div> :
+        <><div className="messages" style={{backgroundImage:theme.wallpaper?`linear-gradient(#100c19aa,#100c19aa),url("${theme.wallpaper}")`:undefined}}>
+          <div className="date-divider"><span>НАЧАЛО ПЕРЕПИСКИ</span></div>
+          {messages.map(m=><article className={`message ${m.user===user?'own':''}`} key={m.id}><div className={`avatar ${m.system?'system':''}`}>{m.user.slice(0,1).toUpperCase()}</div><div className="message-body"><div className="message-heading"><strong>{m.user}</strong>{m.system&&<span className="bot-tag">BOT</span>}<time>{new Date(m.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</time></div><div className="bubble">{m.text}</div></div></article>)}
+          <div ref={bottomRef}/></div>
+        <form className="composer" onSubmit={sendMessage}><button type="button" className="icon-btn attach" title="Вложения (пока не подключены)" onClick={()=>setNotice('Передача файлов ещё не подключена.')}><Paperclip/></button><input value={draft} onChange={e=>setDraft(e.target.value)} placeholder={`Написать в #${channel?.name || 'канал'}…`} maxLength={4000}/><button type="button" className="icon-btn" onClick={()=>setNotice('Реакции будут добавлены следующим этапом.')}><Smile/></button><button className="send-btn" disabled={!draft.trim()} title="Отправить"><Send size={18}/></button></form></>}
+      </>}
+    </main>
+
+    {settingsOpen && <div className="settings-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setSettingsOpen(false)}}><section className="settings-modal"><header><div><span className="eyebrow">ПЕРСОНАЛИЗАЦИЯ</span><h2>Настроить Lunex</h2><p>Меняй внешний вид под себя.</p></div><button className="icon-btn" onClick={()=>setSettingsOpen(false)}><X/></button></header>
+      <div className="settings-content">
+        <section className="setting-group"><h3><Palette size={17}/> Цвет акцента</h3><div className="swatches">{['#b56bff','#ff73d1','#58c7ff','#6de3a5','#ffb86b','#ff6b7a','#ffffff'].map(c=><button key={c} className={`swatch ${theme.accent===c?'picked':''}`} style={{background:c}} onClick={()=>changeTheme('accent',c)}>{theme.accent===c&&<Check size={16} color="#100c19"/>}</button>)}</div><label className="control-row">Свой цвет <input type="color" value={theme.accent} onChange={e=>changeTheme('accent',e.target.value)}/></label></section>
+        <section className="setting-group"><h3><ImageIcon size={17}/> Фон и обои</h3><p>Фото применяется к текущему виду чата. Файл остаётся в браузере.</p><div className="button-row"><button className="secondary" onClick={()=>wallpaperRef.current?.click()}><ImageIcon size={16}/> Выбрать фото</button><button className="secondary" onClick={()=>changeTheme('wallpaper','')}><RotateCcw size={16}/> Убрать фон</button><input ref={wallpaperRef} hidden type="file" accept="image/*" onChange={chooseWallpaper}/></div><label className="slider-label">Прозрачность панелей <b>{theme.transparency}%</b></label><input type="range" min="25" max="100" value={theme.transparency} onChange={e=>changeTheme('transparency',Number(e.target.value))}/><label className="slider-label">Размытие <b>{theme.blur}px</b></label><input type="range" min="0" max="24" value={theme.blur} onChange={e=>changeTheme('blur',Number(e.target.value))}/></section>
+        <section className="setting-group"><h3><SlidersHorizontal size={17}/> Сообщения и текст</h3><label className="slider-label">Размер текста <b>{theme.fontSize}px</b></label><input type="range" min="12" max="20" value={theme.fontSize} onChange={e=>changeTheme('fontSize',Number(e.target.value))}/><label className="slider-label">Скругление пузырей <b>{theme.bubbleRadius}px</b></label><input type="range" min="6" max="28" value={theme.bubbleRadius} onChange={e=>changeTheme('bubbleRadius',Number(e.target.value))}/><label className="control-row">Анимации интерфейса <input type="checkbox" checked={theme.animations} onChange={e=>changeTheme('animations',e.target.checked)}/></label></section>
+        <section className="setting-group"><h3><Sparkles size={17}/> Темы</h3><div className="button-row"><button className="primary" onClick={exportTheme}><Download size={16}/> Экспорт темы</button><button className="secondary" onClick={()=>fileRef.current?.click()}><Upload size={16}/> Импорт темы</button><input ref={fileRef} hidden type="file" accept="application/json,.json" onChange={importTheme}/></div><button className="text-button" onClick={()=>{setTheme(DEFAULT_THEME);setNotice('Настройки темы сброшены.')}}><RotateCcw size={15}/> Сбросить настройки</button></section>
+        <div className="security-note"><ShieldCheck size={18}/><span><strong>Безопасность:</strong> пароли хэшируются, но личные и общественные сообщения пока не имеют сквозного шифрования. Сервер может читать переписки. Не отправляй секретные данные. Прямой эксперимент находится отдельно в /direct.html.</span></div>
+      </div>
+      <footer><span>Настройки сохраняются в этом браузере.</span><button className="primary" onClick={()=>setSettingsOpen(false)}>Готово</button></footer>
+    </section></div>}
+
+    {(newCommunity || newChannel || newDm) && <div className="settings-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget){setNewCommunity(false);setNewChannel(false);setNewDm(false)}}}><form className="small-modal" onSubmit={e=>{e.preventDefault();newDm?openDm(e):newCommunity?createCommunity():createChannel()}}><button type="button" className="icon-btn close-modal" onClick={()=>{setNewCommunity(false);setNewChannel(false);setNewDm(false)}}><X/></button><h2>{newDm?'Новый личный чат':newCommunity?'Создать сообщество':'Добавить канал'}</h2><p>{newDm?'Введи логин пользователя, который уже создал аккаунт.':newCommunity?'Отдельное пространство для друзей или интересов.':'Канал появится в выбранном сообществе.'}</p>{newDm ? <><input autoFocus value={dmUsername} onChange={e=>setDmUsername(e.target.value)} placeholder="Логин пользователя" maxLength="25"/><button type="button" className="primary wide" disabled={!dmUsername.trim()} onClick={openDm}>Открыть чат</button></> : <><input autoFocus value={newName} onChange={e=>setNewName(e.target.value)} placeholder={newCommunity?'Название сообщества':'Название канала'} maxLength="48"/><button className="primary wide" disabled={!newName.trim()}>Создать</button></>}</form></div>}
+    {notice && <div className="toast" role="status">{notice}<button onClick={()=>setNotice('')}><X size={15}/></button></div>}
+  </div>;
+}
+
+createRoot(document.getElementById('root')).render(<App/>);
