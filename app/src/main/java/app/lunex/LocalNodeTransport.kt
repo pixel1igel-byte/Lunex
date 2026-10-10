@@ -47,16 +47,24 @@ internal class LocalNodeTransport(
         if (io.isShutdown) io = Executors.newCachedThreadPool()
         running = true
         io.execute {
+            var listening: ServerSocket? = null
             try {
-                server = ServerSocket(LUNEX_NODE_PORT)
-                port = server!!.localPort
+                listening = ServerSocket(LUNEX_NODE_PORT)
+                if (!running) {
+                    listening.close()
+                    return@execute
+                }
+                server = listening
+                port = listening.localPort
                 registerService()
                 while (running) {
-                    val client = server!!.accept()
+                    val client = listening.accept()
                     io.execute { handle(client) }
                 }
             } catch (e: Exception) {
                 if (running) main.post { onStatus("LAN-узел: ${e.message ?: "ошибка"}") }
+            } finally {
+                runCatching { listening?.close() }
             }
         }
         startDiscovery()
