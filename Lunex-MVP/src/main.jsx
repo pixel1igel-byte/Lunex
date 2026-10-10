@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { io } from 'socket.io-client';
 import {
-  MoonStar, Search, Plus, MessageCircle, Users, Phone, Bell, Settings2,
+  MoonStar, Search, Plus, MessageCircle, Users, Phone, Bell, Settings2, Video, Mic, PhoneOff, PhoneIncoming,
   Hash, Volume2, ChevronDown, Send, Paperclip, Smile, Palette, Image as ImageIcon,
   Type, Sparkles, Download, Upload, RotateCcw, Menu, X, ArrowLeft, Check,
   SlidersHorizontal, PanelLeftClose, CircleHelp, ShieldCheck, Server, Headphones
@@ -52,6 +52,18 @@ function App() {
   const bottomRef = useRef(null);
   const fileRef = useRef(null);
   const wallpaperRef = useRef(null);
+  const peerRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const callRef = useRef(null);
+  const [callState, setCallState] = useState('idle');
+  const [callMode, setCallMode] = useState('audio');
+  const [incomingCall, setIncomingCall] = useState(null);
+  const [remoteStream, setRemoteStream] = useState(null);
+  const [localStream, setLocalStream] = useState(null);
+  const [callMuted, setCallMuted] = useState(false);
+  const [cameraOff, setCameraOff] = useState(false);
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -93,6 +105,68 @@ function App() {
     socket.on('dm:new', onNew);
     return () => socket.off('dm:new', onNew);
   }, [dm?.id, token]);
+
+  function closeCall(notify = true) {
+    const current = callRef.current;
+    if (notify && current) socket.emit('call:end', { callId: current.callId, conversationId: current.conversationId });
+    try { peerRef.current?.close(); } catch {}
+    peerRef.current = null;
+    localStreamRef.current?.getTracks().forEach(track => track.stop());
+    localStreamRef.current = null; callRef.current = null;
+    setLocalStream(null); setRemoteStream(null); setIncomingCall(null); setCallState('idle'); setCallMuted(false); setCameraOff(false);
+  }
+  async function createPeer(call, stream) {
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    peerRef.current = pc;
+    stream.getTracks().forEach(track => pc.addTrack(track, stream));
+    pc.ontrack = event => setRemoteStream(event.streams[0]);
+    pc.onicecandidate = event => { if (event.candidate && callRef.current?.callId === call.callId) socket.emit('call:signal', { callId: call.callId, conversationId: call.conversationId, signal: { candidate: event.candidate } }); };
+    pc.onconnectionstatechange = () => { if (['failed','closed'].includes(pc.connectionState)) closeCall(false); };
+    return pc;
+  }
+  async function startCall(mode) {
+    if (!dm || callState !== 'idle') return;
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('Браузер не поддерживает доступ к микрофону/камере. Открой Lunex по HTTPS.');
+      setCallMode(mode); setCallState('calling');
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: mode === 'video' });
+      localStreamRef.current = stream; setLocalStream(stream);
+      const call = { callId: crypto.randomUUID(), conversationId: dm.id, peerId: dm.other?.id, mode };
+      callRef.current = call;
+      const pc = await createPeer(call, stream);
+      const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
+      socket.emit('call:invite', { ...call, toUserId: call.peerId, offer: pc.localDescription });
+    } catch (error) { closeCall(false); setNotice(error?.message || 'Не удалось начать звонок. Проверь разрешения микрофона и камеры.'); }
+  }
+  async function acceptCall() {
+    const incoming = incomingCall;
+    if (!incoming) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: incoming.mode === 'video' });
+      localStreamRef.current = stream; setLocalStream(stream);
+      const call = { callId: incoming.callId, conversationId: incoming.conversationId, peerId: incoming.caller.id, mode: incoming.mode };
+      callRef.current = call; setCallMode(incoming.mode); setCallState('connected');
+      const pc = await createPeer(call, stream);
+      await pc.setRemoteDescription(new RTCSessionDescription(incoming.offer));
+      const answer = await pc.createAnswer(); await pc.setLocalDescription(answer);
+      socket.emit('call:accept', { callId: call.callId, conversationId: call.conversationId, answer: pc.localDescription });
+      setIncomingCall(null);
+    } catch (error) { setNotice(error?.message || 'Не удалось принять звонок.'); closeCall(false); }
+  }
+  useEffect(() => {
+    const onIncoming = event => { if (callRef.current) { socket.emit('call:reject', event); return; } setIncomingCall(event); setCallMode(event.mode); setCallState('incoming'); };
+    const onAccepted = async event => { if (callRef.current?.callId !== event.callId || !peerRef.current) return; try { await peerRef.current.setRemoteDescription(new RTCSessionDescription(event.answer)); setCallState('connected'); } catch { setNotice('Не удалось установить соединение звонка.'); closeCall(false); } };
+    const onSignal = async event => {
+      if (callRef.current?.callId !== event.callId || !peerRef.current) return;
+      try { if (event.signal?.candidate) await peerRef.current.addIceCandidate(new RTCIceCandidate(event.signal.candidate)); } catch { /* ICE candidate may arrive before peer negotiation completes. */ }
+    };
+    const onRejected = event => { if (callRef.current?.callId === event.callId) { closeCall(false); setNotice('Собеседник отклонил звонок.'); } };
+    const onEnded = event => { if (callRef.current?.callId === event.callId) { closeCall(false); setNotice('Звонок завершён.'); } };
+    socket.on('call:incoming', onIncoming); socket.on('call:accepted', onAccepted); socket.on('call:signal', onSignal); socket.on('call:rejected', onRejected); socket.on('call:ended', onEnded);
+    return () => { socket.off('call:incoming', onIncoming); socket.off('call:accepted', onAccepted); socket.off('call:signal', onSignal); socket.off('call:rejected', onRejected); socket.off('call:ended', onEnded); };
+  }, []);
+  useEffect(() => { if (localVideoRef.current && localStream) localVideoRef.current.srcObject = localStream; }, [localStream, callState]);
+  useEffect(() => { if (remoteVideoRef.current && remoteStream) remoteVideoRef.current.srcObject = remoteStream; }, [remoteStream, callState]);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: theme.animations ? 'smooth' : 'auto' }); }, [messages, dmMessages, theme.animations]);
   useEffect(() => {
@@ -202,7 +276,7 @@ function App() {
     </aside>
 
     <main className="main-pane">
-      {dm ? <><header className="chat-header"><button className="mobile-menu" onClick={()=>setMobileNav(!mobileNav)}><Menu/></button><div className="avatar">{(dm.other?.displayName || '?').slice(0,1).toUpperCase()}</div><div className="channel-meta"><strong>{dm.other?.displayName || 'Личный чат'}</strong><span>@{dm.other?.username || ''} · личная переписка</span></div></header><div className="messages">{dmMessages.length===0 && <div className="date-divider"><span>НАЧАЛО ЛИЧНОЙ ПЕРЕПИСКИ</span></div>}{dmMessages.map(m=><article className={`message ${m.userId===userId?'own':''}`} key={m.id}><div className="avatar">{(m.user || '?').slice(0,1).toUpperCase()}</div><div className="message-body"><div className="message-heading"><strong>{m.user}</strong><time>{new Date(m.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</time></div><div className="bubble">{m.text}</div></div></article>)}<div ref={bottomRef}/></div><form className="composer" onSubmit={sendDm}><input value={dmDraft} onChange={e=>setDmDraft(e.target.value)} placeholder={`Сообщение для ${dm.other?.displayName || 'пользователя'}…`} maxLength={4000}/><button className="send-btn" disabled={!dmDraft.trim()} title="Отправить"><Send size={18}/></button></form></> :
+      {dm ? <><header className="chat-header"><button className="mobile-menu" onClick={()=>setMobileNav(!mobileNav)}><Menu/></button><div className="avatar">{(dm.other?.displayName || '?').slice(0,1).toUpperCase()}</div><div className="channel-meta"><strong>{dm.other?.displayName || 'Личный чат'}</strong><span>@{dm.other?.username || ''} · личная переписка</span></div><div className="header-actions"><button className="icon-btn" title="Голосовой звонок" disabled={callState!=='idle'} onClick={()=>startCall('audio')}><Phone size={19}/></button><button className="icon-btn" title="Видеозвонок" disabled={callState!=='idle'} onClick={()=>startCall('video')}><Video size={19}/></button></div></header><div className="messages">{dmMessages.length===0 && <div className="date-divider"><span>НАЧАЛО ЛИЧНОЙ ПЕРЕПИСКИ</span></div>}{dmMessages.map(m=><article className={`message ${m.userId===userId?'own':''}`} key={m.id}><div className="avatar">{(m.user || '?').slice(0,1).toUpperCase()}</div><div className="message-body"><div className="message-heading"><strong>{m.user}</strong><time>{new Date(m.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</time></div><div className="bubble">{m.text}</div></div></article>)}<div ref={bottomRef}/></div><form className="composer" onSubmit={sendDm}><input value={dmDraft} onChange={e=>setDmDraft(e.target.value)} placeholder={`Сообщение для ${dm.other?.displayName || 'пользователя'}…`} maxLength={4000}/><button className="send-btn" disabled={!dmDraft.trim()} title="Отправить"><Send size={18}/></button></form></> :
       tab === 'calls' || tab === 'notifications' ? <div className="chat-empty"><div className="empty-icon">{tab==='calls'?<Phone/>:<Bell/>}</div><h2>{tab==='calls'?'Звонки':'Уведомления'}</h2><p>{tab==='calls'?'Интерфейс звонков будет подключён после базовых чатов.':'Здесь появятся упоминания, ответы и события.'}</p></div> :
       <><header className="chat-header"><button className="mobile-menu" onClick={()=>setMobileNav(!mobileNav)}><Menu/></button><div className="channel-hash">{channel?.type==='voice'?<Volume2/>:<Hash/>}</div><div className="channel-meta"><strong>{channel?.name || 'Выбери канал'}</strong><span>{community?.name || 'Сообщество'} · общий канал</span></div><div className="header-actions"><button className="icon-btn" title="Поиск"><Search/></button><button className="icon-btn" title="Настроить оформление" onClick={()=>setSettingsOpen(true)}><Palette/></button><button className="icon-btn" title="Участники"><Users/></button></div></header>
         {channel?.type==='voice' ? <div className="chat-empty"><Headphones size={42}/><h2>{channel.name}</h2><p>Голосовой канал пока представлен как интерфейс. Передача аудио ещё не реализована.</p></div> :
@@ -226,6 +300,7 @@ function App() {
     </section></div>}
 
     {(newCommunity || newChannel || newDm) && <div className="settings-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget){setNewCommunity(false);setNewChannel(false);setNewDm(false)}}}><form className="small-modal" onSubmit={e=>{e.preventDefault();newDm?openDm(e):newCommunity?createCommunity():createChannel()}}><button type="button" className="icon-btn close-modal" onClick={()=>{setNewCommunity(false);setNewChannel(false);setNewDm(false)}}><X/></button><h2>{newDm?'Новый личный чат':newCommunity?'Создать сообщество':'Добавить канал'}</h2><p>{newDm?'Введи логин пользователя, который уже создал аккаунт.':newCommunity?'Отдельное пространство для друзей или интересов.':'Канал появится в выбранном сообществе.'}</p>{newDm ? <><input autoFocus value={dmUsername} onChange={e=>setDmUsername(e.target.value)} placeholder="Логин пользователя" maxLength="25"/><button type="button" className="primary wide" disabled={!dmUsername.trim()} onClick={openDm}>Открыть чат</button></> : <><input autoFocus value={newName} onChange={e=>setNewName(e.target.value)} placeholder={newCommunity?'Название сообщества':'Название канала'} maxLength="48"/><button className="primary wide" disabled={!newName.trim()}>Создать</button></>}</form></div>}
+    {(callState !== 'idle' || incomingCall) && <div className="call-overlay"><section className="call-card"><header><div><span className="eyebrow">LUNEX CALL</span><h2>{incomingCall ? `Входящий ${incomingCall.mode === 'video' ? 'видеозвонок' : 'звонок'}` : callMode === 'video' ? 'Видеозвонок' : 'Голосовой звонок'}</h2><p>{incomingCall?.caller?.displayName || dm?.other?.displayName || 'Собеседник'} · {callState === 'calling' ? 'Вызов…' : callState === 'connected' ? 'Соединено' : 'Ожидание ответа'}</p></div></header>{(callMode === 'video' || incomingCall?.mode === 'video') && <div className="call-videos">{remoteStream && <video ref={remoteVideoRef} autoPlay playsInline className="remote-video"/>}{localStream && <video ref={localVideoRef} autoPlay playsInline muted className="local-video"/>}{!remoteStream && <div className="video-placeholder">Ожидание видео собеседника…</div>}</div>}<div className="call-actions">{incomingCall ? <><button className="primary" onClick={acceptCall}><PhoneIncoming size={18}/> Принять</button><button className="danger" onClick={()=>{socket.emit('call:reject',{callId:incomingCall.callId,conversationId:incomingCall.conversationId});setIncomingCall(null);setCallState('idle')}}><PhoneOff size={18}/> Отклонить</button></> : <>{callState==='connected' && <><button className={callMuted?'secondary active-toggle':'secondary'} onClick={()=>{const next=!callMuted;localStreamRef.current?.getAudioTracks().forEach(t=>t.enabled=!next);setCallMuted(next)}}><Mic size={18}/> {callMuted?'Включить микрофон':'Выключить микрофон'}</button>{callMode==='video' && <button className="secondary" onClick={()=>{const next=!cameraOff;localStreamRef.current?.getVideoTracks().forEach(t=>t.enabled=!next);setCameraOff(next)}}><Video size={18}/> {cameraOff?'Включить камеру':'Выключить камеру'}</button>}</>}<button className="danger" onClick={()=>closeCall(true)}><PhoneOff size={18}/> Завершить</button></>}</div><p className="call-note">Звонки используют WebRTC. Если сеть не позволяет прямое соединение, может потребоваться настроенный TURN-сервер.</p></section></div>}
     {notice && <div className="toast" role="status">{notice}<button onClick={()=>setNotice('')}><X size={15}/></button></div>}
   </div>;
 }
