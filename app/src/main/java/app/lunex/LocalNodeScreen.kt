@@ -175,7 +175,7 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                     Button(onClick = {
                         val roomToken = store.inviteTokenForRoom(room.id)
                         if (roomToken == null) status = "Для этой комнаты нет действующего ключа приглашения."
-                        else { transport.send(room.id, roomToken, activeName, chatDraft); chatDraft = ""; localMessages = store.messages(room.id) }
+                        else { transport.send(room.id, activeName, chatDraft); chatDraft = ""; localMessages = store.messages(room.id) }
                     }, enabled = chatDraft.isNotBlank()) { Text("Отпр.") }
                 }
             }
