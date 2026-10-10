@@ -45,7 +45,7 @@ class NativeWebRtcCallTest {
         compose.onNodeWithTag("open-dm-submit").performClick()
         compose.waitUntil(15000) {
             compose.onAllNodesWithText("Bob E2E").fetchSemanticsNodes().isNotEmpty() &&
-                compose.onAllNodesWithText("call-audio").fetchSemanticsNodes().isNotEmpty()
+                compose.onAllNodesWithTag("call-audio").fetchSemanticsNodes().isNotEmpty()
         }
 
         compose.onNodeWithTag("call-audio").performClick()
