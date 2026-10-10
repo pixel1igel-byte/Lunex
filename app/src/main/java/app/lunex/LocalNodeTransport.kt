@@ -151,7 +151,14 @@ internal class LocalNodeTransport(
                         if (store.roomForInvite(token) != roomId || message.roomId != roomId) {
                             JSONObject().put("ok", false).put("error", "Нет доступа к комнате")
                         } else {
-                            if (store.addMessage(message)) main.post { onMessage(message) }
+                            // Deduplication is the loop guard: a node relays a message only
+                            // the first time it stores that message ID.
+                            val inserted = store.addMessage(message)
+                            if (inserted) {
+                                main.post { onMessage(message) }
+                                val sourceAddress = client.inetAddress
+                                io.execute { relayToPeers(message, token, sourceAddress) }
+                            }
                             JSONObject().put("ok", true).put("ack", message.id)
                         }
                     }
@@ -171,6 +178,25 @@ internal class LocalNodeTransport(
                 JSONObject().put("ok", false).put("error", e.message ?: "Ошибка запроса")
             }
             PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true).println(response.toString())
+        }
+    }
+
+    /**
+     * Forward newly accepted messages to the other discovered nodes.
+     *
+     * Every receiver checks the room invite and deduplicates by message ID before
+     * forwarding, so messages can cross multiple phone nodes without a central
+     * server and without an endless relay loop.
+     */
+    private fun relayToPeers(message: LocalNodeMessage, token: String, sourceAddress: InetAddress) {
+        peers().filterNot { it.host.address.contentEquals(sourceAddress.address) }.forEach { peer ->
+            runCatching {
+                request(peer, JSONObject()
+                    .put("op", "message")
+                    .put("token", token)
+                    .put("roomId", message.roomId)
+                    .put("message", message.toJson()))
+            }
         }
     }
 
