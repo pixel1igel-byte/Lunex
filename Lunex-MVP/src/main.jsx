@@ -54,6 +54,7 @@ function App() {
   const wallpaperRef = useRef(null);
   const peerRef = useRef(null);
   const pendingIceRef = useRef([]);
+  const pendingLocalIceRef = useRef([]);
   const localStreamRef = useRef(null);
   const callRef = useRef(null);
   const [callState, setCallState] = useState('idle');
@@ -112,7 +113,7 @@ function App() {
     const current = callRef.current;
     if (notify && current) socket.emit('call:end', { callId: current.callId, conversationId: current.conversationId });
     try { peerRef.current?.close(); } catch {}
-    peerRef.current = null; pendingIceRef.current = [];
+    peerRef.current = null; pendingIceRef.current = []; pendingLocalIceRef.current = [];
     localStreamRef.current?.getTracks().forEach(track => track.stop());
     localStreamRef.current = null; callRef.current = null;
     setLocalStream(null); setRemoteStream(null); setIncomingCall(null); setCallState('idle'); setCallMuted(false); setCameraOff(false);
@@ -128,7 +129,12 @@ function App() {
       if (pc.connectionState === 'connected') setCallState('connected');
       if (pc.connectionState === 'failed' || pc.connectionState === 'closed') { closeCall(false); setNotice('Соединение звонка потеряно. Проверь сеть или TURN-сервер.'); }
     };
-    pc.onicecandidate = event => { if (event.candidate && callRef.current?.callId === call.callId) socket.emit('call:signal', { callId: call.callId, conversationId: call.conversationId, signal: { candidate: event.candidate } }); };
+    pc.onicecandidate = event => {
+      if (!event.candidate || callRef.current?.callId !== call.callId) return;
+      const payload = { callId: call.callId, conversationId: call.conversationId, signal: { candidate: event.candidate } };
+      if (callRef.current.initiator && !callRef.current.signalingReady) pendingLocalIceRef.current.push(payload);
+      else socket.emit('call:signal', payload);
+    };
     return pc;
   }
   async function startCall(mode) {
@@ -138,11 +144,13 @@ function App() {
       setCallMode(mode); setCallState('calling');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: mode === 'video' });
       localStreamRef.current = stream; setLocalStream(stream);
-      const call = { callId: crypto.randomUUID(), conversationId: dm.id, peerId: dm.other?.id, mode };
+      const call = { callId: crypto.randomUUID(), conversationId: dm.id, peerId: dm.other?.id, mode, initiator: true, signalingReady: false };
       callRef.current = call;
       const pc = await createPeer(call, stream);
       const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
       socket.emit('call:invite', { ...call, toUserId: call.peerId, offer: pc.localDescription });
+      call.signalingReady = true;
+      for (const payload of pendingLocalIceRef.current.splice(0)) socket.emit('call:signal', payload);
     } catch (error) { closeCall(false); setNotice(error?.message || 'Не удалось начать звонок. Проверь разрешения микрофона и камеры.'); }
   }
   async function acceptCall() {
@@ -151,7 +159,7 @@ function App() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: incoming.mode === 'video' });
       localStreamRef.current = stream; setLocalStream(stream);
-      const call = { callId: incoming.callId, conversationId: incoming.conversationId, peerId: incoming.caller.id, mode: incoming.mode };
+      const call = { callId: incoming.callId, conversationId: incoming.conversationId, peerId: incoming.caller.id, mode: incoming.mode, initiator: false, signalingReady: true };
       callRef.current = call; setCallMode(incoming.mode); setCallState('connecting');
       const pc = await createPeer(call, stream);
       await pc.setRemoteDescription(new RTCSessionDescription(incoming.offer));
