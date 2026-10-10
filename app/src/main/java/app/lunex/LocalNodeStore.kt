@@ -246,6 +246,21 @@ internal class LocalNodeStore(context: Context) :
         }
     }
 
+    /** All locally held invite secrets for a room, newest first. Different peers
+     * may have joined through different invitations, so mesh operations must try
+     * a token that the destination actually recognizes. */
+    @Synchronized
+    fun inviteTokensForRoom(roomId: String): List<String> {
+        val tokens = mutableListOf<String>()
+        readableDatabase.rawQuery(
+            "SELECT token FROM room_tokens WHERE room_id = ? ORDER BY created_at DESC",
+            arrayOf(roomId)
+        ).use { cursor ->
+            while (cursor.moveToNext()) tokens += cursor.getString(0)
+        }
+        return tokens.distinct()
+    }
+
     @Synchronized
     fun addMessage(message: LocalNodeMessage): Boolean {
         val values = ContentValues().apply {
