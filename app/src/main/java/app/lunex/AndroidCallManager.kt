@@ -245,13 +245,16 @@ internal class AndroidCallManager(
             val cameraName = enumerator.deviceNames.firstOrNull { enumerator.isFrontFacing(it) }
                 ?: enumerator.deviceNames.firstOrNull()
                 ?: throw IllegalStateException("Камера не найдена.")
-            capturer = enumerator.createCapturer(cameraName, null) as? CameraVideoCapturer
+            val camera = enumerator.createCapturer(cameraName, null) as? CameraVideoCapturer
                 ?: throw IllegalStateException("Не удалось открыть камеру.")
-            videoSource = factory.createVideoSource(false)
-            textureHelper = SurfaceTextureHelper.create("LunexCameraThread", egl.eglBaseContext)
-            capturer?.initialize(textureHelper, context, videoSource?.capturerObserver)
-            capturer?.startCapture(640, 480, 24)
-            videoTrack = factory.createVideoTrack("lunex-video", videoSource).apply { setEnabled(cameraEnabled) }
+            val source = factory.createVideoSource(false)
+            val helper = SurfaceTextureHelper.create("LunexCameraThread", egl.eglBaseContext)
+            capturer = camera
+            videoSource = source
+            textureHelper = helper
+            camera.initialize(helper, context, source.capturerObserver)
+            camera.startCapture(640, 480, 24)
+            videoTrack = factory.createVideoTrack("lunex-video", source).apply { setEnabled(cameraEnabled) }
             onLocalVideo(videoTrack)
         } else {
             onLocalVideo(null)
