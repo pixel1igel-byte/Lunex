@@ -53,16 +53,17 @@ internal class LocalNodeTransport(
         io.execute {
             var listening: ServerSocket? = null
             try {
-                listening = ServerSocket(LUNEX_NODE_PORT)
+                val socket = ServerSocket(LUNEX_NODE_PORT)
+                listening = socket
                 if (!running) {
-                    listening.close()
+                    socket.close()
                     return@execute
                 }
-                server = listening
-                port = listening.localPort
+                server = socket
+                port = socket.localPort
                 registerService()
                 while (running) {
-                    val client = listening.accept()
+                    val client = socket.accept()
                     io.execute { handle(client) }
                 }
             } catch (e: Exception) {
