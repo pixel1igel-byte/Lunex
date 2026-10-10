@@ -185,6 +185,14 @@ function publicCommunity(community, userId) {
     channels: (community.channels || []).filter(channel => hasPermission(community, userId, 'view', channel)).map(channel => ({ id: channel.id, name: channel.name, type: channel.type, private: Boolean(channel.private), categoryId: channel.categoryId || null }))
   };
 }
+function evictUnauthorizedChannelSockets(community, channel = null) {
+  const channels = channel ? [channel] : (community.channels || []);
+  for (const socket of io.sockets.sockets.values()) {
+    for (const item of channels) {
+      if (socket.rooms.has(item.id) && !hasPermission(community, socket.data.user.id, 'view', item)) socket.leave(item.id);
+    }
+  }
+}
 function canManageCommunity(community, userId) {
   return hasPermission(community, userId, 'manage_community');
 }
@@ -262,6 +270,7 @@ app.patch('/api/communities/:id/members/:userId', authHttp, (req, res) => {
   const actor = communityMembership(community, req.user.id);
   if (actor?.roleId !== 'owner' && role.id !== 'member') return res.status(403).json({ error: 'Назначать административные роли может только владелец.' });
   member.roleId = role.id; saveDb();
+  evictUnauthorizedChannelSockets(community);
   res.json({ userId: member.userId, roleId: member.roleId });
 });
 app.delete('/api/communities/:id/members/:userId', authHttp, (req, res) => {
@@ -294,6 +303,7 @@ app.patch('/api/communities/:id/roles/:roleId', authHttp, (req, res) => {
   if (name) role.name = name;
   role.permissions = permissions.filter(value => value !== '*');
   saveDb();
+  evictUnauthorizedChannelSockets(community);
   res.json(role);
 });
 app.get('/api/dms', authHttp, (req, res) => res.json(db.dms.filter(d => d.userIds.includes(req.user.id)).map(d => dmSummary(d, req.user.id))));
@@ -441,7 +451,7 @@ app.patch('/api/communities/:id/channels/:channelId', authHttp, (req, res) => {
     const known = new Set((community.roles || []).map(role => role.id));
     channel.allowedRoleIds = [...new Set(req.body.allowedRoleIds.filter(id => known.has(id)))];
   }
-  saveDb(); io.emit('communities:changed', { communityId: community.id }); res.json(channel);
+  saveDb(); evictUnauthorizedChannelSockets(community, channel); io.emit('communities:changed', { communityId: community.id }); res.json(channel);
 });
 app.delete('/api/communities/:id/channels/:channelId/messages/:messageId', authHttp, (req, res) => {
   const community = db.communities.find(item => item.id === req.params.id);
