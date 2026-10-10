@@ -42,7 +42,7 @@ internal class LocalNodeTransport(
         running = true
         io.execute {
             try {
-                server = ServerSocket(0)
+                server = ServerSocket(45873)
                 port = server!!.localPort
                 registerService()
                 while (running) {
@@ -73,6 +73,53 @@ internal class LocalNodeTransport(
 
     /** Current port; internet reachability may require router port forwarding. */
     fun listeningPort(): Int = port
+
+    /**
+     * Add a peer by reachable host/IP and TCP port. This supports direct connections
+     * outside the local Wi-Fi when the remote phone is actually reachable (for
+     * example, public IPv6 or a router port-forward). It does not bypass carrier NAT.
+     */
+    fun connectManually(address: String, callback: (Boolean, String) -> Unit) {
+        io.execute {
+            try {
+                val raw = address.trim()
+                val host: String
+                val portValue: Int
+                if (raw.startsWith("[")) {
+                    val close = raw.indexOf(']')
+                    require(close > 1 && close + 2 < raw.length && raw[close + 1] == ':') {
+                        "Формат IPv6: [адрес]:порт"
+                    }
+                    host = raw.substring(1, close)
+                    portValue = raw.substring(close + 2).toInt()
+                } else {
+                    val split = raw.lastIndexOf(':')
+                    require(split > 0 && raw.indexOf(':') == split) {
+                        "Укажи адрес как IP:порт или [IPv6]:порт"
+                    }
+                    host = raw.substring(0, split)
+                    portValue = raw.substring(split + 1).toInt()
+                }
+                require(portValue in 1..65535) { "Порт должен быть от 1 до 65535." }
+                val peer = LanPeer(host, InetAddress.getByName(host), portValue)
+                val hello = request(peer, JSONObject().put("op", "hello"))
+                require(hello.optBoolean("ok") && hello.optString("nodeId").isNotBlank()) {
+                    "По этому адресу не найден узел Lunex."
+                }
+                require(hello.optString("nodeId") != store.serverId()) { "Это адрес текущего телефона." }
+                val namedPeer = peer.copy(name = hello.optString("name").ifBlank { host })
+                peers[hello.getString("nodeId")] = namedPeer
+                main.post {
+                    onPeersChanged(peers())
+                    onStatus("Подключён узел " + namedPeer.name + ":" + namedPeer.port + "; синхронизирую комнаты…")
+                    callback(true, "Узел добавлен. Доступность зависит от сети и настроек NAT/роутера.")
+                }
+                syncAll()
+            } catch (e: Exception) {
+                main.post { callback(false, e.message ?: "Не удалось подключиться к узлу.") }
+            }
+        }
+    }
 
     fun join(peer: LanPeer, token: String, callback: (Boolean, String) -> Unit) {
         io.execute {
