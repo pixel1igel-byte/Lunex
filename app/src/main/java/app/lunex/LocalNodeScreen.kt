@@ -37,6 +37,21 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
     var status by remember { mutableStateOf("") }
     var selected by remember { mutableStateOf<LocalRoom?>(null) }
     var invite by remember { mutableStateOf("") }
+    var inviteToJoin by remember { mutableStateOf("") }
+    var chatDraft by remember { mutableStateOf("") }
+    var peers by remember { mutableStateOf(emptyList<LanPeer>()) }
+    var localMessages by remember { mutableStateOf(emptyList<LocalNodeMessage>()) }
+    val transport = remember(store) {
+        LocalNodeTransport(context, store,
+            onPeersChanged = { peers = it },
+            onMessage = { msg -> if (selected?.id == msg.roomId) localMessages = store.messages(msg.roomId) },
+            onStatus = { status = it }
+        )
+    }
+    DisposableEffect(transport) {
+        transport.start()
+        onDispose { transport.stop() }
+    }
     Column(Modifier.fillMaxSize().background(Color(0xFF0D0B16)).padding(18.dp)) {
         Text("LUNEX · LOCAL NODE", color = Color(0xFFB56BFF), fontSize = 22.sp, fontWeight = FontWeight.Black)
         Text("ID узла: " + store.serverId(), color = Color(0xFFAAA0BC), fontSize = 12.sp)
@@ -55,15 +70,45 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
             Text("Учётная запись хранится в базе SQLite на этом телефоне; пароль проверяется локально.", color = Color(0xFFAAA0BC), fontSize = 12.sp)
         } else {
             Text("Вошли как " + activeName, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Text("Устройства в этой Wi-Fi сети: ${peers.size}", color = Color(0xFFAAA0BC), fontSize = 12.sp)
+            peers.forEach { peer -> Text("• ${peer.name}", color = Color(0xFFAAA0BC), fontSize = 12.sp) }
+            OutlinedTextField(inviteToJoin, { inviteToJoin = it }, label = { Text("Код приглашения другой комнаты") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Button(onClick = {
+                val peer = peers.firstOrNull()
+                if (peer == null) status = "Сначала подключи оба телефона к одной Wi-Fi сети и дождись обнаружения узла."
+                else transport.join(peer, inviteToJoin.trim()) { ok, message ->
+                    status = message
+                    if (ok) { rooms = store.rooms(); selected = rooms.lastOrNull(); selected?.let { localMessages = store.messages(it.id) }; inviteToJoin = "" }
+                }
+            }, modifier = Modifier.fillMaxWidth(), enabled = inviteToJoin.isNotBlank()) { Text("Подключиться к приглашению") }
             OutlinedTextField(roomName, { roomName = it }, label = { Text("Название комнаты") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Button(onClick = { try { selected = store.createRoom(roomName); rooms = store.rooms(); roomName = ""; invite = ""; status = "" } catch (e: Exception) { status = e.message ?: "Ошибка" } }, modifier = Modifier.fillMaxWidth()) { Text("Создать комнату") }
             LazyColumn(Modifier.weight(1f)) { items(rooms, key = { it.id }) { room ->
-                Row(Modifier.fillMaxWidth().clickable { selected = room; invite = "" }.padding(8.dp)) {
+                Row(Modifier.fillMaxWidth().clickable { selected = room; invite = ""; localMessages = store.messages(room.id) }.padding(8.dp)) {
                     Column(Modifier.weight(1f)) { Text(room.name, color = Color.White); Text("ID: " + room.id, color = Color(0xFFAAA0BC), fontSize = 10.sp) }
                     TextButton(onClick = { try { selected = room; invite = store.createInvite(room.id); status = "" } catch (e: Exception) { status = e.message ?: "Ошибка" } }) { Text("Пригласить") }
                 }
             } }
-            selected?.let { Text("Приглашение: lunex://join/" + it.id + "?token=" + invite, color = Color.White, fontSize = 11.sp) }
+            selected?.let { room ->
+                Text("Приглашение: lunex://join/" + room.id + "?token=" + invite, color = Color.White, fontSize = 11.sp)
+                Text("Сообщения комнаты", color = Color.White, fontWeight = FontWeight.Bold)
+                LazyColumn(Modifier.weight(1f, fill = false).heightIn(max = 220.dp)) {
+                    items(localMessages, key = { it.id }) { msg ->
+                        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                            Text(msg.senderName, color = Color(0xFFB56BFF), fontSize = 11.sp)
+                            Text(msg.body, color = Color.White, fontSize = 14.sp)
+                        }
+                    }
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedTextField(chatDraft, { chatDraft = it }, label = { Text("Сообщение") }, modifier = Modifier.weight(1f))
+                    Button(onClick = {
+                        val roomToken = store.inviteTokenForRoom(room.id)
+                        if (roomToken == null) status = "Для этой комнаты нет действующего ключа приглашения."
+                        else { transport.send(room.id, roomToken, activeName, chatDraft); chatDraft = ""; localMessages = store.messages(room.id) }
+                    }, enabled = chatDraft.isNotBlank()) { Text("Отпр.") }
+                }
+            }
             TextButton(onClick = { loggedIn = false; isRegister = false; selected = null; invite = "" }) { Text("Выйти") }
             TextButton(onClick = onSwitchToCloud) { Text("Старый режим сервера") }
         }
