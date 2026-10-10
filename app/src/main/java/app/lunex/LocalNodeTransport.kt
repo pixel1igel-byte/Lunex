@@ -127,7 +127,7 @@ internal class LocalNodeTransport(
                     throw IllegalStateException("По адресу не найден узел Lunex.")
                 }
                 require(hello.optString("nodeId") != store.serverId()) { "Нельзя подключиться к самому себе." }
-                val response = request(peer, JSONObject().put("op", "join").put("token", token))
+                val response = request(peer, JSONObject().put("op", "join").put("token", token).put("nodeId", store.serverId()))
                 if (!response.optBoolean("ok")) throw IllegalStateException(response.optString("error", "Приглашение не принято"))
                 val roomId = response.getString("roomId")
                 val roomName = response.optString("roomName", "Lunex room")
@@ -136,6 +136,7 @@ internal class LocalNodeTransport(
                 store.rememberPeer(hello.getString("nodeId"), namedPeer.serviceName, endpointOf(namedPeer))
                 main.post { onPeersChanged(peers()) }
                 store.joinRoom(roomId, roomName, token)
+                store.rememberPeerRoom(hello.getString("nodeId"), roomId)
                 sync(peer, roomId)
                 discoverRoomMesh(namedPeer, roomId)
                 syncAll()
@@ -178,7 +179,7 @@ internal class LocalNodeTransport(
         var response: JSONObject? = null
         for (token in store.inviteTokensForRoom(roomId)) {
             val candidate = runCatching {
-                request(peer, JSONObject().put("op", "sync").put("roomId", roomId).put("token", token))
+                request(peer, JSONObject().put("op", "sync").put("roomId", roomId).put("token", token).put("nodeId", store.serverId()))
             }.getOrNull()
             if (candidate?.optBoolean("ok") == true) {
                 response = candidate
@@ -307,7 +308,8 @@ internal class LocalNodeTransport(
                         .put("op", "invite")
                         .put("roomId", roomId)
                         .put("authToken", authToken)
-                        .put("inviteToken", inviteToken))
+                        .put("inviteToken", inviteToken)
+                        .put("nodeId", store.serverId()))
                 }.getOrNull()?.optBoolean("ok") == true
                 if (accepted) break
             }
@@ -338,6 +340,7 @@ internal class LocalNodeTransport(
                     .put("op", "message")
                     .put("token", token)
                     .put("roomId", message.roomId)
+                    .put("fromNodeId", store.serverId())
                     .put("message", message.toJson()))
             }.getOrNull()?.optBoolean("ok") == true
             if (accepted) return true
@@ -382,7 +385,7 @@ internal class LocalNodeTransport(
             var response: JSONObject? = null
             for (token in roomTokens) {
                 val candidate = runCatching {
-                    request(current, JSONObject().put("op", "peers").put("roomId", roomId).put("token", token))
+                    request(current, JSONObject().put("op", "peers").put("roomId", roomId).put("token", token).put("nodeId", store.serverId()))
                 }.getOrNull()
                 if (candidate?.optBoolean("ok") == true) {
                     response = candidate
@@ -405,6 +408,7 @@ internal class LocalNodeTransport(
                 val verified = candidatePeer.copy(name = candidateHello.optString("name").ifBlank { candidatePeer.name })
                 peers[expectedId] = verified
                 store.rememberPeer(expectedId, verified.serviceName, endpointOf(verified))
+                store.rememberPeerRoom(expectedId, roomId)
                 main.post { onPeersChanged(peers()) }
                 queue.addLast(verified)
             }
