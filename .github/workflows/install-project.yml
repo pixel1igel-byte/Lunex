@@ -1,8 +1,6 @@
 name: Replace repository with Android project
 on:
   push:
-    paths:
-      - ".github/workflows/install-project.yml"
     branches:
       - main
 permissions:
@@ -19,7 +17,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -f Lunex-Android-FIXED.zip
+          if [ ! -f Lunex-Android-FIXED.zip ]; then
+            echo "Archive already extracted; nothing to do."
+            exit 0
+          fi
           mkdir -p /tmp/lunex-project
           unzip -q Lunex-Android-FIXED.zip -d /tmp/lunex-project
           test -d /tmp/lunex-project/Lunex-Android
