@@ -147,6 +147,7 @@ internal class LocalNodeTransport(
             peers().forEach { peer ->
                 store.rooms().forEach { room ->
                     if (store.inviteTokensForRoom(room.id).isNotEmpty()) {
+                        runCatching { syncInvites(peer, room.id) }
                         runCatching { sync(peer, room.id) }
                     }
                 }
@@ -195,6 +196,21 @@ internal class LocalNodeTransport(
                         if (room == null) JSONObject().put("ok", false).put("error", "Приглашение недействительно")
                         else JSONObject().put("ok", true).put("roomId", room.id).put("roomName", room.name)
                     }
+                    "invite" -> {
+                        val roomId = request.optString("roomId")
+                        val authToken = request.optString("authToken")
+                        val inviteToken = request.optString("inviteToken")
+                        if (store.roomForInvite(authToken) != roomId || store.room(roomId) == null) {
+                            JSONObject().put("ok", false).put("error", "Нет доступа к комнате")
+                        } else {
+                            val inserted = store.rememberInviteToken(roomId, inviteToken)
+                            if (inserted) {
+                                val sourceAddress = socket.inetAddress
+                                io.execute { relayInviteToPeers(roomId, inviteToken, sourceAddress) }
+                            }
+                            JSONObject().put("ok", true)
+                        }
+                    }
                     "message" -> {
                         val token = request.optString("token")
                         val roomId = request.optString("roomId")
@@ -239,6 +255,41 @@ internal class LocalNodeTransport(
      * forwarding, so messages can cross multiple phone nodes without a central
      * server and without an endless relay loop.
      */
+    /** Propagate newly created room invite secrets using an already shared token. */
+    private fun relayInviteToPeers(roomId: String, inviteToken: String, sourceAddress: InetAddress?) {
+        peers().filterNot { peer ->
+            sourceAddress != null && peer.host.address.contentEquals(sourceAddress.address)
+        }.forEach { peer ->
+            for (authToken in store.inviteTokensForRoom(roomId)) {
+                val accepted = runCatching {
+                    request(peer, JSONObject()
+                        .put("op", "invite")
+                        .put("roomId", roomId)
+                        .put("authToken", authToken)
+                        .put("inviteToken", inviteToken))
+                }.getOrNull()?.optBoolean("ok") == true
+                if (accepted) break
+            }
+        }
+    }
+
+    /** Bring all locally known invite tokens to a peer before message sync. */
+    private fun syncInvites(peer: LanPeer, roomId: String) {
+        val tokens = store.inviteTokensForRoom(roomId)
+        for (inviteToken in tokens) {
+            for (authToken in tokens) {
+                val accepted = runCatching {
+                    request(peer, JSONObject()
+                        .put("op", "invite")
+                        .put("roomId", roomId)
+                        .put("authToken", authToken)
+                        .put("inviteToken", inviteToken))
+                }.getOrNull()?.optBoolean("ok") == true
+                if (accepted) break
+            }
+        }
+    }
+
     private fun relayToPeers(message: LocalNodeMessage, sourceAddress: InetAddress?) {
         peers().filterNot { peer ->
             sourceAddress != null && peer.host.address.contentEquals(sourceAddress.address)
