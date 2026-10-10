@@ -15,6 +15,8 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 
 private const val LUNEX_NODE_PORT = 45873
 private const val MAX_REQUEST_FRAME_CHARS = 65_536
@@ -33,6 +35,7 @@ internal class LocalNodeTransport(
     private val nsd = app.getSystemService(Context.NSD_SERVICE) as NsdManager
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var io = Executors.newCachedThreadPool()
+    @Volatile private var maintenance: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
     private val peers = ConcurrentHashMap<String, LanPeer>()
     @Volatile private var running = false
     @Volatile private var server: ServerSocket? = null
@@ -45,6 +48,7 @@ internal class LocalNodeTransport(
     fun start() {
         if (running) return
         if (io.isShutdown) io = Executors.newCachedThreadPool()
+        if (maintenance.isShutdown) maintenance = Executors.newSingleThreadScheduledExecutor()
         running = true
         io.execute {
             var listening: ServerSocket? = null
@@ -69,6 +73,7 @@ internal class LocalNodeTransport(
         }
         startDiscovery()
         io.execute { reconnectKnownPeers() }
+        maintenance.scheduleWithFixedDelay({ if (running) reconnectKnownPeers() }, 30, 30, TimeUnit.SECONDS)
         main.post { onStatus("LAN-узел запущен. Поиск устройств в этой Wi-Fi сети…") }
     }
 
@@ -84,6 +89,7 @@ internal class LocalNodeTransport(
         peers.clear()
         main.post { onPeersChanged(emptyList()) }
         io.shutdownNow()
+        maintenance.shutdownNow()
     }
 
     fun peers(): List<LanPeer> = peers.values.toList()
@@ -325,17 +331,23 @@ internal class LocalNodeTransport(
 
     private fun reconnectKnownPeers() {
         store.knownPeers().forEach { saved ->
-            runCatching {
+            try {
                 val peer = parseEndpoint(saved.endpoint, saved.label)
                 val hello = request(peer, JSONObject().put("op", "hello"))
                 val actualId = hello.optString("nodeId")
                 if (hello.optBoolean("ok") && actualId == saved.peerId && actualId != store.serverId()) {
                     val verified = peer.copy(name = hello.optString("name").ifBlank { saved.label })
-                    peers[actualId] = verified
+                    val newlyConnected = peers.put(actualId, verified) == null
                     store.rememberPeer(actualId, verified.serviceName, endpointOf(verified))
+                    if (newlyConnected) {
+                        main.post { onPeersChanged(peers()) }
+                        syncAll()
+                    }
+                } else if (peers.remove(saved.peerId) != null) {
                     main.post { onPeersChanged(peers()) }
-                    syncAll()
                 }
+            } catch (_: Exception) {
+                if (peers.remove(saved.peerId) != null) main.post { onPeersChanged(peers()) }
             }
         }
     }
