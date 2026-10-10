@@ -126,7 +126,7 @@ private fun LunexApp() {
     var notice by remember { mutableStateOf("") }
     var showServer by remember { mutableStateOf(false) }
     var showNewDm by remember { mutableStateOf(false) }
-    var socket by remember { mutableStateOf<Socket?>(null) }
+    var socket by remember { mutableStateOf<Socket?>(null) }\n    val activeChannelRef = remember { java.util.concurrent.atomic.AtomicReference("") }\n    val activeDmRef = remember { java.util.concurrent.atomic.AtomicReference("") }\n    LaunchedEffect(activeChannel, activeDm) { activeChannelRef.set(activeChannel); activeDmRef.set(activeDm?.id.orEmpty()) }
     var communityDialog by remember { mutableStateOf(false) }
     var communityName by remember { mutableStateOf("") }
 
@@ -146,7 +146,7 @@ private fun LunexApp() {
                 val msg = event.optJSONObject("message") ?: return@Listener
                 val channelId = event.optString("channelId")
                 val item = ChatMessage(msg.optString("id"), msg.optString("user"), msg.optString("text"), msg.optString("time"), msg.optString("userId"))
-                if (channelId == activeChannel && activeDm == null) {
+                if (channelId == activeChannelRef.get() && activeDmRef.get().isBlank()) {
                     android.os.Handler(mainLooper).post { messages = (messages + item).takeLast(500) }
                 }
             })
@@ -154,7 +154,7 @@ private fun LunexApp() {
                 val event = args.firstOrNull() as? JSONObject ?: return@Listener
                 val msg = event.optJSONObject("message") ?: return@Listener
                 val id = event.optString("conversationId")
-                if (activeDm?.id == id) {
+                if (activeDmRef.get() == id) {
                     val item = ChatMessage(msg.optString("id"), msg.optString("user"), msg.optString("text"), msg.optString("time"), msg.optString("userId"))
                     android.os.Handler(mainLooper).post { messages = (messages + item).takeLast(500) }
                 }
