@@ -1,8 +1,13 @@
 package app.lunex
 
 import android.os.Bundle
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -17,6 +22,12 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,6 +38,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import org.webrtc.PeerConnection
+import org.webrtc.SurfaceViewRenderer
+import org.webrtc.VideoTrack
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -49,7 +64,7 @@ private const val DEFAULT_SERVER = "https://lunex-messenger.onrender.com"
 private data class Channel(val id: String, val name: String, val type: String)
 private data class Community(val id: String, val name: String, val channels: List<Channel>)
 private data class ChatMessage(val id: String, val user: String, val text: String, val time: String, val userId: String = "")
-private data class DirectChat(val id: String, val username: String, val displayName: String, val lastMessage: String)
+private data class DirectChat(val id: String, val userId: String, val username: String, val displayName: String, val lastMessage: String)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -132,12 +147,65 @@ private fun LunexApp() {
     LaunchedEffect(activeChannel, activeDm) { activeChannelRef.set(activeChannel); activeDmRef.set(activeDm?.id.orEmpty()) }
     var communityDialog by remember { mutableStateOf(false) }
     var communityName by remember { mutableStateOf("") }
+    var callState by remember { mutableStateOf("idle") }
+    var callMode by remember { mutableStateOf("audio") }
+    var incomingCall by remember { mutableStateOf<JSONObject?>(null) }
+    var localVideoTrack by remember { mutableStateOf<VideoTrack?>(null) }
+    var remoteVideoTrack by remember { mutableStateOf<VideoTrack?>(null) }
+    var pendingCallAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var iceServers by remember { mutableStateOf(listOf(PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer())) }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+        val action = pendingCallAction; pendingCallAction = null
+        if (results.values.all { it }) action?.invoke() else notice = "Для звонков разреши доступ к микрофону и камере."
+    }
+    fun withCallPermissions(action: () -> Unit) {
+        val needed = buildList {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) add(Manifest.permission.RECORD_AUDIO)
+            if (callMode == "video" && ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) add(Manifest.permission.CAMERA)
+        }
+        if (needed.isEmpty()) action() else { pendingCallAction = action; permissionLauncher.launch(needed.toTypedArray()) }
+    }
+    val callManager = remember(context, server, token, iceServers) {
+        AndroidCallManager(context, server, token, iceServers,
+            onIncoming = { event -> android.os.Handler(android.os.Looper.getMainLooper()).post { incomingCall = event; callMode = event.optString("mode", "audio") } },
+            onState = { state -> android.os.Handler(android.os.Looper.getMainLooper()).post {
+                callState = if (state in setOf("ended", "rejected", "failed")) "idle" else state
+                if (state in setOf("ended", "rejected", "failed", "idle")) incomingCall = null
+                if (state == "ended") notice = "Собеседник завершил звонок."
+                if (state == "rejected") notice = "Собеседник отклонил звонок."
+            } },
+            onLocalVideo = { track -> android.os.Handler(android.os.Looper.getMainLooper()).post { localVideoTrack = track } },
+            onRemoteVideo = { track -> android.os.Handler(android.os.Looper.getMainLooper()).post { remoteVideoTrack = track } },
+            onError = { message -> android.os.Handler(android.os.Looper.getMainLooper()).post { notice = message } }
+        )
+    }
+    LaunchedEffect(token, server) {
+        if (token.isNotBlank()) runCatching {
+            val config = request(server, "/api/call-config", token = token)
+            val array = config.optJSONArray("iceServers") ?: JSONArray()
+            val parsed = mutableListOf<PeerConnection.IceServer>()
+            for (i in 0 until array.length()) {
+                val item = array.getJSONObject(i)
+                val urls = item.optJSONArray("urls")?.let { a -> (0 until a.length()).map { a.optString(it) } }
+                    ?: listOf(item.optString("urls")).filter { it.isNotBlank() }
+                for (uri in urls) {
+                    val builder = PeerConnection.IceServer.builder(uri)
+                    if (item.has("username")) builder.setUsername(item.optString("username"))
+                    if (item.has("credential")) builder.setPassword(item.optString("credential"))
+                    parsed.add(builder.createIceServer())
+                }
+            }
+            if (parsed.isNotEmpty()) iceServers = parsed
+        }
+    }
+    LaunchedEffect(socket, callManager) { socket?.let { callManager.bind(it) } }
+    DisposableEffect(callManager) { onDispose { callManager.dispose() } }
 
     suspend fun loadDms(base: String, authToken: String): List<DirectChat> {
         val arr = requestArray(base, "/api/dms", authToken)
         return (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i); val other = o.optJSONObject("other") ?: JSONObject()
-            DirectChat(o.optString("id"), other.optString("username"), other.optString("displayName"), o.optString("lastMessage"))
+            DirectChat(o.optString("id"), other.optString("id"), other.optString("username"), other.optString("displayName"), o.optString("lastMessage"))
         }
     }
 
@@ -321,7 +389,7 @@ private fun LunexApp() {
                                 try {
                                     val res = request(server, "/api/dms", "POST", token, JSONObject().put("username", dmUsername.trim().removePrefix("@")))
                                     val other = res.optJSONObject("other") ?: JSONObject()
-                                    val chat = DirectChat(res.optString("id"), other.optString("username"), other.optString("displayName"), res.optString("lastMessage"))
+                                    val chat = DirectChat(res.optString("id"), other.optString("id"), other.optString("username"), other.optString("displayName"), res.optString("lastMessage"))
                                     dms = loadDms(server, token).let { listOf(chat) + it.filter { d -> d.id != chat.id } }
                                     activeDm = chat; activeChannel = ""; messages = emptyList(); socket?.emit("dm:join", chat.id); refreshDm(chat, token); dmUsername = ""; showNewDm = false
                                 } catch(e:Exception) { notice=e.message ?: "Не удалось создать чат" }
