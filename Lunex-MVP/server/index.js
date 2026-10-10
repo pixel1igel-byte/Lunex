@@ -154,7 +154,7 @@ function dmSummary(conversation, viewerId) {
   const otherId = conversation.userIds.find(id => id !== viewerId);
   const other = db.users.find(u => u.id === otherId);
   const last = conversation.messages.at(-1);
-  return { id: conversation.id, other: other ? publicUser(other) : { id: otherId, username: 'unknown', displayName: 'Удалённый аккаунт' }, lastMessage: last?.text || '', time: last?.time || conversation.createdAt };
+  return { id: conversation.id, other: other ? publicUser(other) : { id: otherId, username: 'unknown', displayName: 'Удалённый аккаунт' }, lastMessage: last?.text || (last?.attachment ? '📎 ' + last.attachment.name : ''), time: last?.time || conversation.createdAt };
 }
 app.get('/api/bootstrap', authHttp, (_req, res) => res.json({ communities: db.communities }));
 app.get('/api/dms', authHttp, (req, res) => res.json(db.dms.filter(d => d.userIds.includes(req.user.id)).map(d => dmSummary(d, req.user.id))));
