@@ -3,10 +3,16 @@ package app.lunex
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.os.Handler
 import android.os.Looper
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import java.io.InputStreamReader
 import java.io.PrintWriter
 import java.io.OutputStreamWriter
@@ -28,6 +34,8 @@ import java.util.concurrent.TimeUnit
 private const val LUNEX_NODE_PORT = 45873
 private const val MAX_REQUEST_FRAME_CHARS = 65_536
 private const val MAX_RESPONSE_FRAME_CHARS = 24_000_000
+private const val MAX_FILE_BYTES = 25L * 1024L * 1024L
+private const val FILE_CHUNK_BYTES = 24 * 1024
 
 internal data class LanPeer(val name: String, val host: InetAddress, val port: Int, val serviceName: String = name)
 
@@ -36,6 +44,7 @@ internal class LocalNodeTransport(
     private val store: LocalNodeStore,
     private val onPeersChanged: (List<LanPeer>) -> Unit,
     private val onMessage: (LocalNodeMessage) -> Unit,
+    private val onFile: (LocalNodeFile) -> Unit,
     private val onStatus: (String) -> Unit
 ) {
     private val app = context.applicationContext
