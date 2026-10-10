@@ -330,8 +330,9 @@ io.on('connection', socket => {
     const conversationId = String(payload?.conversationId || '').slice(0, 64);
     const text = typeof payload?.text === 'string' ? payload.text.trim().slice(0, MAX_MESSAGE_LENGTH) : '';
     const conversation = db.dms.find(d => d.id === conversationId && d.userIds.includes(socket.data.user.id));
-    if (!conversation || !socket.rooms.has(`dm:${conversationId}`) || !text) return;
-    const message = { id: randomBytes(12).toString('hex'), userId: socket.data.user.id, user: socket.data.user.displayName, text, time: new Date().toISOString() };
+    const upload = payload?.attachmentId ? db.uploads.find(item => item.id === payload.attachmentId && item.scope === 'dm' && item.scopeId === conversationId) : null;
+    if (!conversation || !socket.rooms.has(`dm:${conversationId}`) || (!text && !upload)) return;
+    const message = { id: randomBytes(12).toString('hex'), userId: socket.data.user.id, user: socket.data.user.displayName, text, time: new Date().toISOString(), ...(upload ? { attachment: { id: upload.id, name: upload.name, type: upload.type, size: upload.size } } : {}) };
     conversation.messages.push(message); conversation.messages = conversation.messages.slice(-MAX_HISTORY); saveDb();
     const event = { conversationId, message };
     for (const userId of conversation.userIds) io.to(`user:${userId}`).emit('dm:new', event);
@@ -341,8 +342,9 @@ io.on('connection', socket => {
     if (!messageBurst() || !messageSustained()) { socket.emit('message:error', { error: 'Слишком много сообщений. Подождите немного.' }); return; }
     const channelId = String(payload?.channelId || '').slice(0, 120);
     const text = typeof payload?.text === 'string' ? payload.text.trim().slice(0, MAX_MESSAGE_LENGTH) : '';
-    if (!channelId || !text || !isValidChannelId(channelId, db.communities) || !socket.rooms.has(channelId)) return;
-    const message = { id: randomBytes(12).toString('hex'), userId: socket.data.user.id, user: socket.data.user.displayName, text, time: new Date().toISOString() };
+    const upload = payload?.attachmentId ? db.uploads.find(item => item.id === payload.attachmentId && item.scope === 'channel' && item.scopeId === channelId) : null;
+    if (!channelId || (!text && !upload) || !isValidChannelId(channelId, db.communities) || !socket.rooms.has(channelId)) return;
+    const message = { id: randomBytes(12).toString('hex'), userId: socket.data.user.id, user: socket.data.user.displayName, text, time: new Date().toISOString(), ...(upload ? { attachment: { id: upload.id, name: upload.name, type: upload.type, size: upload.size } } : {}) };
     db.messages[channelId] ||= []; db.messages[channelId].push(message); db.messages[channelId] = db.messages[channelId].slice(-MAX_HISTORY); saveDb();
     io.to(channelId).emit('message:new', { channelId, message });
   });
