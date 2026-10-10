@@ -135,6 +135,7 @@ private suspend fun requestArray(base: String, path: String, token: String): JSO
 private fun LunexApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = remember { context.getSharedPreferences("lunex", android.content.Context.MODE_PRIVATE) }
+    val outbox = remember { OfflineOutbox(context) }
     val scope = rememberCoroutineScope()
     var server by remember { mutableStateOf(prefs.getString("server", DEFAULT_SERVER) ?: DEFAULT_SERVER) }
     var token by remember { mutableStateOf(prefs.getString("token", "") ?: "") }
@@ -237,7 +238,18 @@ private fun LunexApp() {
                 val ch = activeChannel
                 if (ch.isNotBlank() && activeDm == null) s.emit("channel:join", ch)
                 activeDm?.let { s.emit("dm:join", it.id) }
+                // Replay durable local messages using stable IDs; server deduplicates retries.
+                outbox.pending().forEach { pending ->
+                    val payload = JSONObject().put("clientMessageId", pending.clientId).put("text", pending.text)
+                    if (pending.kind == "dm") s.emit("dm:send", payload.put("conversationId", pending.targetId))
+                    else s.emit("message:send", payload.put("channelId", pending.targetId))
+                }
             }
+            s.on("message:ack", Emitter.Listener { args ->
+                val event = args.firstOrNull() as? JSONObject ?: return@Listener
+                val clientId = event.optString("clientMessageId")
+                if (clientId.isNotBlank()) outbox.acknowledge(clientId)
+            })
             s.on("message:new", Emitter.Listener { args ->
                 val event = args.firstOrNull() as? JSONObject ?: return@Listener
                 val msg = event.optJSONObject("message") ?: return@Listener
@@ -452,9 +464,30 @@ private fun LunexApp() {
                             val text = draft.trim()
                             if (text.isNotEmpty()) {
                                 val s = socket
-                                if (s == null || !s.connected()) notice = "Нет соединения с сервером"
-                                else if (activeDm != null) s.emit("dm:send", JSONObject().put("conversationId", activeDm!!.id).put("text", text))
-                                else if (activeChannel.isNotBlank()) s.emit("message:send", JSONObject().put("channelId", activeChannel).put("text", text))
+                                val clientId = java.util.UUID.randomUUID().toString()
+                                val targetDm = activeDm
+                                val kind: String
+                                val targetId: String
+                                if (targetDm != null) {
+                                    kind = "dm"
+                                    targetId = targetDm.id
+                                } else if (activeChannel.isNotBlank()) {
+                                    kind = "channel"
+                                    targetId = activeChannel
+                                } else {
+                                    notice = "Сначала открой чат или канал."
+                                    return@IconButton
+                                }
+                                // Persist before network send so process death/offline periods cannot lose it.
+                                outbox.enqueue(PendingMessage(clientId, kind, targetId, text, System.currentTimeMillis()))
+                                if (s != null && s.connected()) {
+                                    val payload = JSONObject().put("clientMessageId", clientId).put("text", text)
+                                    if (kind == "dm") s.emit("dm:send", payload.put("conversationId", targetId))
+                                    else s.emit("message:send", payload.put("channelId", targetId))
+                                    notice = "Сообщение сохранено на устройстве, ожидает подтверждения доставки."
+                                } else {
+                                    notice = "Нет сети. Сообщение сохранено на устройстве и будет отправлено при подключении."
+                                }
                                 draft = ""
                             }
                         }) { Icon(Icons.Default.Send, "Отправить", tint = Purple) }
