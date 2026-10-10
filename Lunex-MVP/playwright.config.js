@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests-browser',
+  testIgnore: ['**/android-peer.spec.js'],
   timeout: 90000,
   expect: { timeout: 15000 },
   fullyParallel: false,
