@@ -18,6 +18,7 @@ import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChatBubbleOutline
@@ -206,13 +207,46 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                     }
                 }
             }
-            LazyColumn(Modifier.weight(1f)) { items(rooms, key = { it.id }) { room ->
-                Row(Modifier.fillMaxWidth().clickable { selected = room; invite = ""; localMessages = store.messages(room.id); roomFiles = store.files(room.id) }.padding(8.dp)) {
-                    Column(Modifier.weight(1f)) { Text(room.name, color = Color.White); Text("ID: " + room.id, color = Color(0xFFAAA0BC), fontSize = 10.sp) }
-                    TextButton(onClick = { try { selected = room; invite = store.createInvite(room.id); transport.syncAll(); status = "" } catch (e: Exception) { status = e.message ?: "Ошибка" } }) { Text("Пригласить") }
+            if (selected == null) {
+                if (rooms.isEmpty()) {
+                    Column(Modifier.fillMaxWidth().weight(1f).padding(28.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+                        Surface(shape = androidx.compose.foundation.shape.CircleShape, color = Color(0xFF241B35), modifier = Modifier.size(84.dp)) {
+                            Box(contentAlignment = androidx.compose.ui.Alignment.Center) { Icon(Icons.Default.ChatBubbleOutline, contentDescription = null, tint = Color(0xFFB56BFF), modifier = Modifier.size(38.dp)) }
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        Text("Здесь будут твои чаты", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Text("Создай комнату или подключись по приглашению.", color = Color(0xFFAAA0BC), fontSize = 13.sp)
+                        Spacer(Modifier.height(14.dp))
+                        Button(onClick = { connectPanelOpen = true }) { Icon(Icons.Default.Add, null); Text("Создать или подключить") }
+                    }
+                } else {
+                    LazyColumn(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 8.dp)) {
+                        items(rooms, key = { it.id }) { room ->
+                            Surface(Modifier.fillMaxWidth().clickable { selected = room; invite = ""; localMessages = store.messages(room.id); roomFiles = store.files(room.id) }, color = Color(0xFF191426), shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp)) {
+                                Row(Modifier.padding(14.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                                    Surface(shape = androidx.compose.foundation.shape.CircleShape, color = Color(0xFF352448), modifier = Modifier.size(48.dp)) {
+                                        Box(contentAlignment = androidx.compose.ui.Alignment.Center) { Text(room.name.take(1).uppercase(), color = Color(0xFFB56BFF), fontSize = 20.sp, fontWeight = FontWeight.Bold) }
+                                    }
+                                    Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                                        Text(room.name, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                                        Text(store.messages(room.id).lastOrNull()?.body ?: "Комната Lunex", color = Color(0xFFAAA0BC), fontSize = 12.sp, maxLines = 1)
+                                    }
+                                    TextButton(onClick = { try { selected = room; invite = store.createInvite(room.id); transport.syncAll(); status = "" } catch (e: Exception) { status = e.message ?: "Ошибка" } }) { Text("Пригласить", color = Color(0xFFB56BFF)) }
+                                }
+                            }
+                        }
+                    }
                 }
-            } }
-            selected?.let { room ->
+            } else {
+                selected?.let { room ->
+                    Row(Modifier.fillMaxWidth().background(Color(0xFF191426)).padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        IconButton(onClick = { selected = null; invite = "" }) { Icon(Icons.Default.ArrowBack, contentDescription = "Назад к чатам", tint = Color(0xFFB56BFF)) }
+                        Column(Modifier.weight(1f)) {
+                            Text(room.name, color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                            Text(if (peers.isEmpty()) "Локальная комната" else "${peers.size} устройств подключено", color = Color(0xFFAAA0BC), fontSize = 11.sp)
+                        }
+                        IconButton(onClick = { try { invite = store.createInvite(room.id); transport.syncAll() } catch (e: Exception) { status = e.message ?: "Ошибка" } }) { Icon(Icons.Default.Add, contentDescription = "Пригласить", tint = Color(0xFFB56BFF)) }
+                    }
                 if (invite.isNotBlank()) {
                     val inviteUri = "lunex://join/" + room.id + "?token=" + invite
                     Text("Приглашение", color = Color(0xFFAAA0BC), fontSize = 11.sp)
@@ -276,8 +310,9 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                         else { transport.send(room.id, activeName, chatDraft); chatDraft = ""; localMessages = store.messages(room.id) }
                     }, enabled = chatDraft.isNotBlank()) { Text("Отпр.") }
                 }
+                }
             }
-            TextButton(onClick = { loggedIn = false; isRegister = false; selected = null; invite = "" }) { Text("Выйти") }
+            TextButton(onClick = { loggedIn = false; isRegister = false; selected = null; invite = "" }, modifier = Modifier.padding(start = 12.dp)) { Text("Выйти", color = Color(0xFFAAA0BC)) }
         }
         if (shownStatus.isNotBlank()) Text(shownStatus, color = Color(0xFFFF8D9B), fontSize = 12.sp)
     }
