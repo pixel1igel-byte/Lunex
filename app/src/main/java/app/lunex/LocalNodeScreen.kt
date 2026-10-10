@@ -66,7 +66,6 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                 activeName = id.displayName; loggedIn = true; password = ""; rooms = store.rooms(); status = ""
             } catch (e: Exception) { status = e.message ?: "Ошибка локального аккаунта" } } }, modifier = Modifier.fillMaxWidth()) { Text(if (isRegister) "Создать локальный аккаунт" else "Войти") }
             TextButton(onClick = { isRegister = !isRegister; status = "" }) { Text(if (isRegister) "Уже есть аккаунт? Войти" else "Создать аккаунт") }
-            TextButton(onClick = onSwitchToCloud) { Text("Открыть старый режим сервера") }
             Text("Учётная запись хранится в базе SQLite на этом телефоне; пароль проверяется локально.", color = Color(0xFFAAA0BC), fontSize = 12.sp)
         } else {
             Text("Вошли как " + activeName, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
@@ -110,7 +109,6 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                 }
             }
             TextButton(onClick = { loggedIn = false; isRegister = false; selected = null; invite = "" }) { Text("Выйти") }
-            TextButton(onClick = onSwitchToCloud) { Text("Старый режим сервера") }
         }
         if (status.isNotBlank()) Text(status, color = Color(0xFFFF8D9B), fontSize = 12.sp)
     }
