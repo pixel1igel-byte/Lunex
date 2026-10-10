@@ -220,7 +220,7 @@ internal class LocalNodeTransport(
                         val room = roomId?.let { store.room(it) }
                         if (room == null) JSONObject().put("ok", false).put("error", "Приглашение недействительно")
                         else {
-                            request.optString("nodeId").takeIf { it.isNotBlank() }?.let { store.rememberPeerRoom(it, room.id) }
+                            rememberPeerRoomIfKnown(request.optString("nodeId"), room.id, socket.inetAddress)
                             JSONObject().put("ok", true).put("roomId", room.id).put("roomName", room.name)
                         }
                     }
@@ -230,7 +230,7 @@ internal class LocalNodeTransport(
                         if (store.roomForInvite(token) != roomId) {
                             JSONObject().put("ok", false).put("error", "Нет доступа к комнате")
                         } else {
-                            request.optString("nodeId").takeIf { it.isNotBlank() }?.let { store.rememberPeerRoom(it, roomId) }
+                            rememberPeerRoomIfKnown(request.optString("nodeId"), roomId, socket.inetAddress)
                             val array = org.json.JSONArray()
                             peers.forEach { (peerId, peer) ->
                                 if (peerId != store.serverId() && store.isPeerInRoom(peerId, roomId)) {
@@ -250,7 +250,7 @@ internal class LocalNodeTransport(
                         if (store.roomForInvite(authToken) != roomId || store.room(roomId) == null) {
                             JSONObject().put("ok", false).put("error", "Нет доступа к комнате")
                         } else {
-                            request.optString("nodeId").takeIf { it.isNotBlank() }?.let { store.rememberPeerRoom(it, roomId) }
+                            rememberPeerRoomIfKnown(request.optString("nodeId"), roomId, socket.inetAddress)
                             val inserted = store.rememberInviteToken(roomId, inviteToken)
                             if (inserted) {
                                 val sourceAddress = socket.inetAddress
@@ -267,7 +267,7 @@ internal class LocalNodeTransport(
                             message.body.length > 4000 || message.id.length > 128 || message.senderName.length > 80) {
                             JSONObject().put("ok", false).put("error", "Нет доступа к комнате или сообщение некорректно")
                         } else {
-                            request.optString("fromNodeId").takeIf { it.isNotBlank() }?.let { store.rememberPeerRoom(it, roomId) }
+                            rememberPeerRoomIfKnown(request.optString("fromNodeId"), roomId, socket.inetAddress)
                             // Deduplication is the loop guard: a node relays a message only
                             // the first time it stores that message ID.
                             val inserted = store.addMessage(message)
@@ -284,7 +284,7 @@ internal class LocalNodeTransport(
                         val roomId = request.optString("roomId")
                         if (store.roomForInvite(token) != roomId) JSONObject().put("ok", false).put("error", "Нет доступа к комнате")
                         else {
-                            request.optString("nodeId").takeIf { it.isNotBlank() }?.let { store.rememberPeerRoom(it, roomId) }
+                            rememberPeerRoomIfKnown(request.optString("nodeId"), roomId, socket.inetAddress)
                             val array = org.json.JSONArray()
                             store.messages(roomId).forEach { array.put(it.toJson()) }
                             JSONObject().put("ok", true).put("messages", array)
@@ -476,6 +476,19 @@ internal class LocalNodeTransport(
         }
         require(endpointPort in 1..65535) { "Некорректный порт сохранённого узла." }
         return LanPeer(label, InetAddress.getByName(host), endpointPort)
+    }
+
+    /**
+     * Only trust a node ID for membership tracking when it matches a peer we
+     * already verified at the same source address. Direct Internet peers that
+     * cannot be dialed back still sync through their own periodic pulls.
+     */
+    private fun rememberPeerRoomIfKnown(peerId: String, roomId: String, sourceAddress: InetAddress) {
+        if (peerId.isBlank() || peerId == store.serverId()) return
+        val known = peers[peerId] ?: return
+        if (known.host.address.contentEquals(sourceAddress.address)) {
+            store.rememberPeerRoom(peerId, roomId)
+        }
     }
 
     private fun endpointOf(peer: LanPeer): String {
