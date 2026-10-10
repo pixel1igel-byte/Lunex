@@ -156,7 +156,120 @@ function dmSummary(conversation, viewerId) {
   const last = conversation.messages.at(-1);
   return { id: conversation.id, other: other ? publicUser(other) : { id: otherId, username: 'unknown', displayName: 'Удалённый аккаунт' }, lastMessage: last?.text || (last?.attachment ? '📎 ' + last.attachment.name : ''), time: last?.time || conversation.createdAt };
 }
-app.get('/api/bootstrap', authHttp, (_req, res) => res.json({ communities: db.communities }));
+function communityMembership(community, userId) {
+  return (community.members || []).find(member => member.userId === userId) || null;
+}
+function roleFor(community, membership) {
+  return (community.roles || []).find(role => role.id === membership?.roleId) || null;
+}
+function hasPermission(community, userId, permission, channel = null) {
+  // Legacy seeded communities remain open so existing accounts keep working.
+  if (!community.ownerId) return true;
+  const member = communityMembership(community, userId);
+  if (!member) return false;
+  const role = roleFor(community, member);
+  if (!role || !(role.permissions || []).some(value => value === '*' || value === permission)) return false;
+  if (channel?.private && !(channel.allowedRoleIds || []).includes(member.roleId) && member.roleId !== 'owner') return false;
+  return true;
+}
+function publicCommunity(community, userId) {
+  const member = communityMembership(community, userId);
+  return {
+    ...community,
+    isMember: !community.ownerId || Boolean(member),
+    myRole: member?.roleId || (!community.ownerId ? 'member' : null),
+    channels: (community.channels || []).filter(channel => hasPermission(community, userId, 'view', channel))
+  };
+}
+function canManageCommunity(community, userId) {
+  return hasPermission(community, userId, 'manage_community');
+}
+function canManageMembers(community, userId) {
+  return hasPermission(community, userId, 'manage_members');
+}
+app.get('/api/bootstrap', authHttp, (req, res) => res.json({
+  communities: db.communities.filter(community => !community.ownerId || communityMembership(community, req.user.id)).map(community => publicCommunity(community, req.user.id))
+}));
+app.get('/api/communities/:id/members', authHttp, (req, res) => {
+  const community = db.communities.find(item => item.id === req.params.id);
+  if (!community) return res.status(404).json({ error: 'Сообщество не найдено.' });
+  if (!hasPermission(community, req.user.id, 'view')) return res.status(403).json({ error: 'Ты не состоишь в этом сообществе.' });
+  res.json((community.members || []).map(member => {
+    const user = db.users.find(item => item.id === member.userId);
+    return { user: user ? publicUser(user) : { id: member.userId, username: 'unknown', displayName: 'Удалённый аккаунт' }, roleId: member.roleId, joinedAt: member.joinedAt };
+  }));
+});
+app.post('/api/communities/:id/invites', authHttp, (req, res) => {
+  const community = db.communities.find(item => item.id === req.params.id);
+  if (!community) return res.status(404).json({ error: 'Сообщество не найдено.' });
+  if (!canManageCommunity(community, req.user.id)) return res.status(403).json({ error: 'Создавать приглашения может только владелец или администратор.' });
+  community.invites ||= [];
+  const code = randomBytes(9).toString('base64url');
+  const maxUses = Number.isInteger(req.body?.maxUses) ? Math.max(1, Math.min(1000, req.body.maxUses)) : 0;
+  const invite = { code, createdBy: req.user.id, createdAt: new Date().toISOString(), uses: 0, maxUses };
+  community.invites.push(invite); saveDb();
+  res.status(201).json({ code, communityId: community.id, communityName: community.name, uses: invite.uses, maxUses: invite.maxUses });
+});
+app.post('/api/invites/:code/join', authHttp, (req, res) => {
+  const community = db.communities.find(item => (item.invites || []).some(invite => invite.code === req.params.code));
+  if (!community) return res.status(404).json({ error: 'Приглашение не найдено или отключено.' });
+  const invite = community.invites.find(item => item.code === req.params.code);
+  if (invite.maxUses && invite.uses >= invite.maxUses) return res.status(410).json({ error: 'Лимит использований приглашения исчерпан.' });
+  community.members ||= [];
+  let member = communityMembership(community, req.user.id);
+  if (!member) {
+    member = { userId: req.user.id, roleId: 'member', joinedAt: new Date().toISOString() };
+    community.members.push(member);
+    invite.uses += 1; saveDb();
+  }
+  res.json({ community: publicCommunity(community, req.user.id) });
+});
+app.patch('/api/communities/:id/members/:userId', authHttp, (req, res) => {
+  const community = db.communities.find(item => item.id === req.params.id);
+  if (!community) return res.status(404).json({ error: 'Сообщество не найдено.' });
+  if (!canManageMembers(community, req.user.id)) return res.status(403).json({ error: 'Недостаточно прав для управления участниками.' });
+  const member = communityMembership(community, req.params.userId);
+  if (!member) return res.status(404).json({ error: 'Участник не найден.' });
+  if (member.roleId === 'owner') return res.status(403).json({ error: 'Нельзя менять роль владельца.' });
+  const role = (community.roles || []).find(item => item.id === req.body?.roleId && item.id !== 'owner');
+  if (!role) return res.status(400).json({ error: 'Укажи существующую роль.' });
+  const actor = communityMembership(community, req.user.id);
+  if (actor?.roleId !== 'owner' && (role.permissions || []).includes('*')) return res.status(403).json({ error: 'Администратор не может назначить роль владельца.' });
+  member.roleId = role.id; saveDb();
+  res.json({ userId: member.userId, roleId: member.roleId });
+});
+app.delete('/api/communities/:id/members/:userId', authHttp, (req, res) => {
+  const community = db.communities.find(item => item.id === req.params.id);
+  if (!community) return res.status(404).json({ error: 'Сообщество не найдено.' });
+  const actor = communityMembership(community, req.user.id);
+  const target = communityMembership(community, req.params.userId);
+  if (!target) return res.status(404).json({ error: 'Участник не найден.' });
+  if (target.roleId === 'owner') return res.status(403).json({ error: 'Владельца нельзя удалить из сообщества.' });
+  if (req.user.id !== target.userId && !canManageMembers(community, req.user.id)) return res.status(403).json({ error: 'Недостаточно прав для удаления участника.' });
+  if (req.user.id === target.userId && target.roleId === 'owner') return res.status(403).json({ error: 'Передай владение другому участнику перед выходом.' });
+  community.members = community.members.filter(item => item.userId !== target.userId);
+  saveDb();
+  for (const socket of io.sockets.sockets.values()) {
+    if (socket.data.user.id === target.userId) {
+      for (const channel of community.channels || []) socket.leave(channel.id);
+    }
+  }
+  res.json({ ok: true });
+});
+app.patch('/api/communities/:id/roles/:roleId', authHttp, (req, res) => {
+  const community = db.communities.find(item => item.id === req.params.id);
+  if (!community) return res.status(404).json({ error: 'Сообщество не найдено.' });
+  if (!canManageCommunity(community, req.user.id)) return res.status(403).json({ error: 'Изменять роли может только владелец или администратор.' });
+  const role = (community.roles || []).find(item => item.id === req.params.roleId && item.id !== 'owner');
+  if (!role) return res.status(404).json({ error: 'Роль не найдена.' });
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 32) : role.name;
+  const allowedPermissions = new Set(['view','send','manage_channels','manage_members','manage_community','manage_messages']);
+  const permissions = Array.isArray(req.body?.permissions) ? [...new Set(req.body.permissions.filter(value => allowedPermissions.has(value)))].slice(0, allowedPermissions.size) : role.permissions;
+  if (name) role.name = name;
+  role.permissions = permissions.filter(value => value !== '*');
+  saveDb();
+  res.json(role);
+}));
 app.get('/api/dms', authHttp, (req, res) => res.json(db.dms.filter(d => d.userIds.includes(req.user.id)).map(d => dmSummary(d, req.user.id))));
 app.post('/api/dms', authHttp, (req, res) => {
   const username = cleanUsername(req.body?.username).replace(/^@/, '');
@@ -188,7 +301,12 @@ app.post('/api/uploads', authHttp, express.raw({ type: 'application/octet-stream
   if (!allowedUploadTypes.has(type)) return res.status(415).json({ error: 'Поддерживаются изображения, PDF и текстовые файлы.' });
   if (!Buffer.isBuffer(req.body) || req.body.length < 1 || req.body.length > MAX_UPLOAD_SIZE) return res.status(400).json({ error: 'Файл пустой или превышает 4 МБ.' });
   if (scope === 'dm' && !db.dms.some(d => d.id === scopeId && d.userIds.includes(req.user.id))) return res.status(404).json({ error: 'Личный чат не найден.' });
-  if (scope === 'channel' && !isValidChannelId(scopeId, db.communities)) return res.status(404).json({ error: 'Канал не найден.' });
+  if (scope === 'channel') {
+    const community = db.communities.find(item => (item.channels || []).some(channel => channel.id === scopeId));
+    const channel = community?.channels.find(item => item.id === scopeId);
+    if (!community || !channel) return res.status(404).json({ error: 'Канал не найден.' });
+    if (!hasPermission(community, req.user.id, 'send', channel)) return res.status(403).json({ error: 'Нет прав отправлять файлы в этот канал.' });
+  }
   const id = randomBytes(18).toString('hex');
   fs.mkdirSync(uploadRoot, { recursive: true });
   const filePath = path.join(uploadRoot, id);
@@ -202,7 +320,7 @@ app.get('/api/uploads/:id', authHttp, (req, res) => {
   if (!attachment) return res.status(404).json({ error: 'Файл не найден.' });
   const allowed = attachment.scope === 'dm'
     ? db.dms.some(d => d.id === attachment.scopeId && d.userIds.includes(req.user.id))
-    : isValidChannelId(attachment.scopeId, db.communities);
+    : (() => { const community = db.communities.find(item => (item.channels || []).some(channel => channel.id === attachment.scopeId)); const channel = community?.channels.find(item => item.id === attachment.scopeId); return Boolean(community && channel && hasPermission(community, req.user.id, 'view', channel)); })();
   if (!allowed) return res.status(403).json({ error: 'Нет доступа к этому файлу.' });
   if (!fs.existsSync(attachment.filePath)) return res.status(410).json({ error: 'Файл больше не хранится на сервере.' });
   res.setHeader('Content-Type', attachment.type);
@@ -214,24 +332,79 @@ app.get('/api/uploads/:id', authHttp, (req, res) => {
 });
 
 app.get('/api/messages/:channelId', authHttp, (req, res) => {
-  if (!isValidChannelId(req.params.channelId, db.communities)) return res.status(404).json({ error: 'Канал не найден.' });
+  const community = db.communities.find(item => (item.channels || []).some(channel => channel.id === req.params.channelId));
+  const channel = community?.channels.find(item => item.id === req.params.channelId);
+  if (!community || !channel) return res.status(404).json({ error: 'Канал не найден.' });
+  if (!hasPermission(community, req.user.id, 'view', channel)) return res.status(403).json({ error: 'Нет доступа к этому каналу.' });
   res.json(db.messages[req.params.channelId] || []);
 });
 app.post('/api/communities', authHttp, (req, res) => {
   const name = String(req.body?.name || '').trim().slice(0, 48);
   if (!name) return res.status(400).json({ error: 'Введите название сообщества.' });
   const id = `community-${randomBytes(8).toString('hex')}`;
-  const community = { id, name, description: 'Новое сообщество', ownerId: req.user.id, channels: [{ id: `${id}-general`, name: 'общение', type: 'text' }] };
-  db.communities.push(community); saveDb(); io.emit('communities:changed', db.communities); res.status(201).json(community);
+  const community = {
+    id, name, description: String(req.body?.description || '').trim().slice(0, 240) || 'Новое сообщество',
+    ownerId: req.user.id, createdAt: new Date().toISOString(),
+    roles: [
+      { id: 'owner', name: 'Владелец', permissions: ['*'] },
+      { id: 'admin', name: 'Администратор', permissions: ['view','send','manage_channels','manage_members','manage_community','manage_messages'] },
+      { id: 'member', name: 'Участник', permissions: ['view','send'] }
+    ],
+    members: [{ userId: req.user.id, roleId: 'owner', joinedAt: new Date().toISOString() }],
+    invites: [],
+    channels: [{ id: `${id}-general`, name: 'общение', type: 'text', private: false, allowedRoleIds: [] }]
+  };
+  db.communities.push(community); saveDb(); io.emit('communities:changed', { communityId: community.id }); res.status(201).json(publicCommunity(community, req.user.id));
 });
 app.post('/api/communities/:id/channels', authHttp, (req, res) => {
-  const community = db.communities.find(c => c.id === req.params.id);
+  const community = db.communities.find(item => item.id === req.params.id);
   if (!community) return res.status(404).json({ error: 'Сообщество не найдено.' });
-  if (community.ownerId && community.ownerId !== req.user.id) return res.status(403).json({ error: 'Создавать каналы может владелец сообщества.' });
+  if (!hasPermission(community, req.user.id, 'manage_channels')) return res.status(403).json({ error: 'Недостаточно прав для создания каналов.' });
   const name = String(req.body?.name || '').trim().slice(0, 48);
+  const type = req.body?.type === 'voice' ? 'voice' : 'text';
+  const isPrivate = req.body?.private === true;
   if (!name) return res.status(400).json({ error: 'Введите название канала.' });
-  const channel = { id: `${community.id}-${randomBytes(6).toString('hex')}`, name, type: 'text' };
-  community.channels.push(channel); saveDb(); io.emit('communities:changed', db.communities); res.status(201).json(channel);
+  const channel = { id: `${community.id}-${randomBytes(6).toString('hex')}`, name, type, private: isPrivate, allowedRoleIds: isPrivate ? ['owner','admin'] : [] };
+  community.channels.push(channel); saveDb(); io.emit('communities:changed', { communityId: community.id }); res.status(201).json(channel);
+});
+app.patch('/api/communities/:id/channels/:channelId', authHttp, (req, res) => {
+  const community = db.communities.find(item => item.id === req.params.id);
+  if (!community) return res.status(404).json({ error: 'Сообщество не найдено.' });
+  if (!hasPermission(community, req.user.id, 'manage_channels')) return res.status(403).json({ error: 'Недостаточно прав для изменения каналов.' });
+  const channel = community.channels.find(item => item.id === req.params.channelId);
+  if (!channel) return res.status(404).json({ error: 'Канал не найден.' });
+  if (typeof req.body?.name === 'string' && req.body.name.trim()) channel.name = req.body.name.trim().slice(0, 48);
+  if (typeof req.body?.private === 'boolean') {
+    channel.private = req.body.private;
+    channel.allowedRoleIds = channel.private ? ['owner','admin'] : [];
+  }
+  if (Array.isArray(req.body?.allowedRoleIds)) {
+    const known = new Set((community.roles || []).map(role => role.id));
+    channel.allowedRoleIds = [...new Set(req.body.allowedRoleIds.filter(id => known.has(id)))];
+  }
+  saveDb(); io.emit('communities:changed', { communityId: community.id }); res.json(channel);
+});
+app.delete('/api/communities/:id/channels/:channelId', authHttp, (req, res) => {
+  const community = db.communities.find(item => item.id === req.params.id);
+  if (!community) return res.status(404).json({ error: 'Сообщество не найдено.' });
+  if (!hasPermission(community, req.user.id, 'manage_channels')) return res.status(403).json({ error: 'Недостаточно прав для удаления каналов.' });
+  if (!community.channels.some(item => item.id === req.params.channelId)) return res.status(404).json({ error: 'Канал не найден.' });
+  community.channels = community.channels.filter(item => item.id !== req.params.channelId);
+  delete db.messages[req.params.channelId];
+  saveDb();
+  for (const socket of io.sockets.sockets.values()) socket.leave(req.params.channelId);
+  io.emit('communities:changed', { communityId: community.id }); res.json({ ok: true });
+});
+app.delete('/api/communities/:id', authHttp, (req, res) => {
+  const community = db.communities.find(item => item.id === req.params.id);
+  if (!community) return res.status(404).json({ error: 'Сообщество не найдено.' });
+  if (!hasPermission(community, req.user.id, 'manage_community')) return res.status(403).json({ error: 'Только владелец или администратор может удалить сообщество.' });
+  if (community.ownerId !== req.user.id) return res.status(403).json({ error: 'Удалить сообщество может только владелец.' });
+  db.communities = db.communities.filter(item => item.id !== community.id);
+  for (const channel of community.channels || []) delete db.messages[channel.id];
+  saveDb();
+  for (const socket of io.sockets.sockets.values()) for (const channel of community.channels || []) socket.leave(channel.id);
+  io.emit('communities:changed', { communityId: community.id }); res.json({ ok: true });
 });
 
 if (fs.existsSync(path.resolve(__dirname, '../dist'))) {
@@ -312,7 +485,9 @@ io.on('connection', socket => {
   const messageSustained = createRateLimiter({ limit: 120, windowMs: 60_000 });
   socket.on('channel:join', channelId => {
     if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
-    if (!isValidChannelId(channelId, db.communities)) return;
+    const community = db.communities.find(item => (item.channels || []).some(channel => channel.id === channelId));
+    const channel = community?.channels.find(item => item.id === channelId);
+    if (!community || !channel || !hasPermission(community, socket.data.user.id, 'view', channel)) return;
     for (const room of socket.rooms) if (room !== socket.id && room !== `user:${socket.data.user.id}`) socket.leave(room);
     socket.join(channelId);
   });
@@ -343,7 +518,9 @@ io.on('connection', socket => {
     const channelId = String(payload?.channelId || '').slice(0, 120);
     const text = typeof payload?.text === 'string' ? payload.text.trim().slice(0, MAX_MESSAGE_LENGTH) : '';
     const upload = payload?.attachmentId ? db.uploads.find(item => item.id === payload.attachmentId && item.scope === 'channel' && item.scopeId === channelId) : null;
-    if (!channelId || (!text && !upload) || !isValidChannelId(channelId, db.communities) || !socket.rooms.has(channelId)) return;
+    const community = db.communities.find(item => (item.channels || []).some(channel => channel.id === channelId));
+    const channel = community?.channels.find(item => item.id === channelId);
+    if (!channelId || (!text && !upload) || !community || !channel || !hasPermission(community, socket.data.user.id, 'send', channel) || !socket.rooms.has(channelId)) return;
     const message = { id: randomBytes(12).toString('hex'), userId: socket.data.user.id, user: socket.data.user.displayName, text, time: new Date().toISOString(), ...(upload ? { attachment: { id: upload.id, name: upload.name, type: upload.type, size: upload.size } } : {}) };
     db.messages[channelId] ||= []; db.messages[channelId].push(message); db.messages[channelId] = db.messages[channelId].slice(-MAX_HISTORY); saveDb();
     io.to(channelId).emit('message:new', { channelId, message });
