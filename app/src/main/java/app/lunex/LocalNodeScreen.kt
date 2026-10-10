@@ -28,8 +28,9 @@ import kotlinx.coroutines.withContext
 @Composable
 internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
     val context = LocalContext.current
-    val store = remember { LocalNodeStore(context) }
+    val store = remember { LocalNodeRuntime.store(context) }
     val scope = rememberCoroutineScope()
+    val nodeState by LocalNodeRuntime.state.collectAsState()
     var username by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -44,23 +45,30 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
     var inviteToJoin by remember { mutableStateOf("") }
     var peerEndpoint by remember { mutableStateOf("") }
     var chatDraft by remember { mutableStateOf("") }
-    var peers by remember { mutableStateOf(emptyList<LanPeer>()) }
     var localMessages by remember { mutableStateOf(emptyList<LocalNodeMessage>()) }
-    val transport = remember(store) {
-        LocalNodeTransport(context, store,
-            onPeersChanged = { peers = it },
-            onMessage = { msg -> if (selected?.id == msg.roomId) localMessages = store.messages(msg.roomId) },
-            onStatus = { status = it }
-        )
+    val peers = nodeState.peers
+    val transport = remember { LocalNodeRuntime.ensure(context) }
+    LaunchedEffect(nodeState.lastMessage?.id, selected?.id) {
+        val room = selected
+        if (room != null && nodeState.lastMessage?.roomId == room.id) {
+            localMessages = store.messages(room.id)
+        }
     }
-    DisposableEffect(transport) {
-        transport.start()
-        onDispose { transport.stop() }
-    }
+    val localEndpoints = remember(transport) { transport.localEndpoints() }
+    val shownStatus = status.ifBlank { nodeState.status }
     Column(Modifier.fillMaxSize().background(Color(0xFF0D0B16)).padding(18.dp)) {
         Text("LUNEX · LOCAL NODE", color = Color(0xFFB56BFF), fontSize = 22.sp, fontWeight = FontWeight.Black)
         Text("ID узла: " + store.serverId(), color = Color(0xFFAAA0BC), fontSize = 12.sp)
-        Text("Порт узла: " + transport.listeningPort(), color = Color(0xFFAAA0BC), fontSize = 12.sp)
+        Text("Порт TCP: 45873", color = Color(0xFFAAA0BC), fontSize = 12.sp)
+        Text("Адреса этого телефона:", color = Color(0xFFAAA0BC), fontSize = 12.sp)
+        Text(localEndpoints.joinToString("\n").ifBlank { "Активные IP-адреса пока не найдены." }, color = Color.White, fontSize = 11.sp)
+        if (localEndpoints.isNotEmpty()) {
+            TextButton(onClick = {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Lunex node endpoints", localEndpoints.joinToString("\n")))
+                status = "Адреса узла скопированы."
+            }) { Icon(Icons.Default.ContentCopy, contentDescription = null); Text("Скопировать адреса") }
+        }
         if (!loggedIn) {
             Spacer(Modifier.height(20.dp))
             Text(if (isRegister) "Создать аккаунт на телефоне" else "Войти в локальный аккаунт", color = Color.White, fontSize = 18.sp)
@@ -75,8 +83,8 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
             Text("Учётная запись хранится в базе SQLite на этом телефоне; пароль проверяется локально.", color = Color(0xFFAAA0BC), fontSize = 12.sp)
         } else {
             Text("Вошли как " + activeName, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            Text("Устройства в этой Wi-Fi сети: ${peers.size}", color = Color(0xFFAAA0BC), fontSize = 12.sp)
-            peers.forEach { peer -> Text("• ${peer.name}", color = Color(0xFFAAA0BC), fontSize = 12.sp) }
+            Text("Узлы рядом или подключённые вручную: ${peers.size}", color = Color(0xFFAAA0BC), fontSize = 12.sp)
+            peers.forEach { peer -> Text("• ${peer.name} · ${peer.host.hostAddress}:${peer.port}", color = Color(0xFFAAA0BC), fontSize = 12.sp) }
             OutlinedTextField(peerEndpoint, { peerEndpoint = it }, label = { Text("Адрес узла через интернет (IP:порт)") }, supportingText = { Text("Для прямого подключения узел должен быть доступен извне; может понадобиться проброс порта.") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Button(onClick = {
                 try {
@@ -135,7 +143,7 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
             LazyColumn(Modifier.weight(1f)) { items(rooms, key = { it.id }) { room ->
                 Row(Modifier.fillMaxWidth().clickable { selected = room; invite = ""; localMessages = store.messages(room.id) }.padding(8.dp)) {
                     Column(Modifier.weight(1f)) { Text(room.name, color = Color.White); Text("ID: " + room.id, color = Color(0xFFAAA0BC), fontSize = 10.sp) }
-                    TextButton(onClick = { try { selected = room; invite = store.createInvite(room.id); status = "" } catch (e: Exception) { status = e.message ?: "Ошибка" } }) { Text("Пригласить") }
+                    TextButton(onClick = { try { selected = room; invite = store.createInvite(room.id); transport.syncAll(); status = "" } catch (e: Exception) { status = e.message ?: "Ошибка" } }) { Text("Пригласить") }
                 }
             } }
             selected?.let { room ->
@@ -167,12 +175,12 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                     Button(onClick = {
                         val roomToken = store.inviteTokenForRoom(room.id)
                         if (roomToken == null) status = "Для этой комнаты нет действующего ключа приглашения."
-                        else { transport.send(room.id, roomToken, activeName, chatDraft); chatDraft = ""; localMessages = store.messages(room.id) }
+                        else { transport.send(room.id, activeName, chatDraft); chatDraft = ""; localMessages = store.messages(room.id) }
                     }, enabled = chatDraft.isNotBlank()) { Text("Отпр.") }
                 }
             }
             TextButton(onClick = { loggedIn = false; isRegister = false; selected = null; invite = "" }) { Text("Выйти") }
         }
-        if (status.isNotBlank()) Text(status, color = Color(0xFFFF8D9B), fontSize = 12.sp)
+        if (shownStatus.isNotBlank()) Text(shownStatus, color = Color(0xFFFF8D9B), fontSize = 12.sp)
     }
 }
