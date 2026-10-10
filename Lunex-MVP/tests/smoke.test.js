@@ -133,8 +133,9 @@ test('live server relays authenticated WebRTC signaling only to direct-chat part
   }
   async function register(username) {
     const response = await fetch(base + '/api/auth/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, displayName: username, password: 'Lunex-test-password-2026' }) });
-    assert.equal(response.status, 201, await response.text());
-    return response.json();
+    const body = await response.json();
+    assert.equal(response.status, 201, JSON.stringify(body));
+    return body;
   }
   function waitEvent(socket, event) {
     return new Promise((resolve, reject) => {
