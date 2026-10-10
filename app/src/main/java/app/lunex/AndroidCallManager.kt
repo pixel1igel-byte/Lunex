@@ -32,6 +32,7 @@ internal class AndroidCallManager(
     private val context: Context,
     private val server: String,
     private val token: String,
+    private val iceServers: List<PeerConnection.IceServer>,
     private val onIncoming: (JSONObject) -> Unit,
     private val onState: (String) -> Unit,
     private val onLocalVideo: (VideoTrack?) -> Unit,
@@ -262,9 +263,6 @@ internal class AndroidCallManager(
     }
 
     private fun createPeer() {
-        val iceServers = listOf(
-            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
-        )
         val config = PeerConnection.RTCConfiguration(iceServers)
         peer = factory.createPeerConnection(config, object : PeerConnection.Observer {
             override fun onSignalingChange(state: PeerConnection.SignalingState) {}
