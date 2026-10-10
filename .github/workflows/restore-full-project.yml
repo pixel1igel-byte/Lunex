@@ -1,5 +1,6 @@
 name: Restore full Lunex project
 on:
+  workflow_dispatch:
   push:
     paths:
       - ".github/workflows/restore-full-project.yml"
