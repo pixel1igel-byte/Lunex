@@ -1,6 +1,7 @@
 package app.lunex
 
 import android.os.Bundle
+import android.content.Intent
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.ComponentActivity
@@ -70,6 +71,8 @@ private data class DirectChat(val id: String, val userId: String, val username: 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Start the local phone node independently of the current Compose screen.
+        runCatching { startForegroundService(Intent(this, LocalNodeService::class.java)) }
         setContent { LunexApp() }
     }
 }
