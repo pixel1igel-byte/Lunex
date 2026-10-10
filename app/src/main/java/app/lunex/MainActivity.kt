@@ -104,7 +104,7 @@ private suspend fun requestArray(base: String, path: String, token: String): JSO
 @Composable
 private fun LunexApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val prefs = remember { context.getSharedPreferences("lunex", MODE_PRIVATE) }
+    val prefs = remember { context.getSharedPreferences("lunex", android.content.Context.MODE_PRIVATE) }
     val scope = rememberCoroutineScope()
     var server by remember { mutableStateOf(prefs.getString("server", DEFAULT_SERVER) ?: DEFAULT_SERVER) }
     var token by remember { mutableStateOf(prefs.getString("token", "") ?: "") }
