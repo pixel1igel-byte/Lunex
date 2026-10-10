@@ -307,8 +307,8 @@ internal class LocalNodeTransport(
         val line = StringBuilder()
         while (true) {
             val value = reader.read()
-            if (value == -1) return if (line.length == 0) null else line.toString().removeSuffix("\\r")
-            if (value == '\\n'.code) return line.toString().removeSuffix("\\r")
+            if (value == -1) return if (line.length == 0) null else line.toString().removeSuffix("\r")
+            if (value == '\n'.code) return line.toString().removeSuffix("\r")
             if (line.length >= maxChars) throw IllegalArgumentException("Слишком большой сетевой кадр.")
             line.append(value.toChar())
         }
