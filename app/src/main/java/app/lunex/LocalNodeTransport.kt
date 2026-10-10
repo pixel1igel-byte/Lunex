@@ -444,7 +444,6 @@ internal class LocalNodeTransport(
                         store.rooms().forEach { room ->
                             if (store.inviteTokensForRoom(room.id).isNotEmpty()) discoverRoomMesh(verified, room.id)
                         }
-                        syncAll()
                     }
                 } else if (peers.remove(saved.peerId) != null) {
                     main.post { onPeersChanged(peers()) }
@@ -453,6 +452,9 @@ internal class LocalNodeTransport(
                 if (peers.remove(saved.peerId) != null) main.post { onPeersChanged(peers()) }
             }
         }
+        // Poll reachable room peers as well as reconnecting stale ones. This is
+        // required for one-way Internet links where the remote phone cannot dial back.
+        syncAll()
     }
 
     private fun parseEndpoint(raw: String, label: String): LanPeer {
