@@ -161,9 +161,11 @@ internal class LocalNodeTransport(
 
     fun syncAll() {
         io.execute {
-            peers().forEach { peer ->
+            peers.entries.toList().forEach { entry ->
+                val peerId = entry.key
+                val peer = entry.value
                 store.rooms().forEach { room ->
-                    if (store.inviteTokensForRoom(room.id).isNotEmpty()) {
+                    if (store.isPeerInRoom(peerId, room.id) && store.inviteTokensForRoom(room.id).isNotEmpty()) {
                         runCatching { syncInvites(peer, room.id) }
                         runCatching { pushHistoryToPeer(peer, room.id) }
                         runCatching { sync(peer, room.id) }
@@ -306,9 +308,11 @@ internal class LocalNodeTransport(
      */
     /** Propagate newly created room invite secrets using an already shared token. */
     private fun relayInviteToPeers(roomId: String, inviteToken: String, sourceAddress: InetAddress?) {
-        peers().filterNot { peer ->
-            sourceAddress != null && peer.host.address.contentEquals(sourceAddress.address)
-        }.forEach { peer ->
+        peers.entries.toList().filter { entry ->
+            store.isPeerInRoom(entry.key, roomId) &&
+                (sourceAddress == null || !entry.value.host.address.contentEquals(sourceAddress.address))
+        }.forEach { entry ->
+            val peer = entry.value
             for (authToken in store.inviteTokensForRoom(roomId)) {
                 val accepted = runCatching {
                     request(peer, JSONObject()
@@ -333,7 +337,8 @@ internal class LocalNodeTransport(
                         .put("op", "invite")
                         .put("roomId", roomId)
                         .put("authToken", authToken)
-                        .put("inviteToken", inviteToken))
+                        .put("inviteToken", inviteToken)
+                        .put("nodeId", store.serverId()))
                 }.getOrNull()?.optBoolean("ok") == true
                 if (accepted) break
             }
@@ -365,9 +370,10 @@ internal class LocalNodeTransport(
     }
 
     private fun relayToPeers(message: LocalNodeMessage, sourceAddress: InetAddress?) {
-        peers().filterNot { peer ->
-            sourceAddress != null && peer.host.address.contentEquals(sourceAddress.address)
-        }.forEach { peer -> sendMessageToPeer(peer, message) }
+        peers.entries.toList().filter { entry ->
+            store.isPeerInRoom(entry.key, message.roomId) &&
+                (sourceAddress == null || !entry.value.host.address.contentEquals(sourceAddress.address))
+        }.forEach { entry -> sendMessageToPeer(entry.value, message) }
     }
 
     /**
@@ -395,6 +401,7 @@ internal class LocalNodeTransport(
                     request(current, JSONObject().put("op", "peers").put("roomId", roomId).put("token", token).put("nodeId", store.serverId()))
                 }.getOrNull()
                 if (candidate?.optBoolean("ok") == true) {
+                    store.rememberPeerRoom(currentId, roomId)
                     response = candidate
                     break
                 }
