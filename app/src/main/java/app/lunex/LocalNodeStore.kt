@@ -246,6 +246,41 @@ internal class LocalNodeStore(context: Context) :
         } finally { writableDatabase.endTransaction() }
     }
 
+    /** Register an invitation token received from an authenticated peer. */
+    @Synchronized
+    fun rememberInviteToken(roomId: String, token: String): Boolean {
+        require(token.length in 32..128) { "Ключ приглашения повреждён." }
+        require(room(roomId) != null) { "Комната не найдена." }
+        val digest = MessageDigest.getInstance("SHA-256").digest(token.toByteArray(Charsets.UTF_8))
+        val hash = digest.joinToString("") { "%02x".format(it) }
+        writableDatabase.beginTransaction()
+        try {
+            val inserted = writableDatabase.insertWithOnConflict(
+                "invites", null,
+                ContentValues().apply {
+                    put("token_hash", hash)
+                    put("room_id", roomId)
+                    put("created_at", System.currentTimeMillis())
+                    put("revoked", 0)
+                },
+                SQLiteDatabase.CONFLICT_IGNORE
+            ) != -1L
+            writableDatabase.insertWithOnConflict(
+                "room_tokens", null,
+                ContentValues().apply {
+                    put("room_id", roomId)
+                    put("token", token)
+                    put("created_at", System.currentTimeMillis())
+                },
+                SQLiteDatabase.CONFLICT_IGNORE
+            )
+            writableDatabase.setTransactionSuccessful()
+            return inserted
+        } finally {
+            writableDatabase.endTransaction()
+        }
+    }
+
     @Synchronized
     fun inviteTokenForRoom(roomId: String): String? {
         readableDatabase.rawQuery("SELECT token FROM room_tokens WHERE room_id = ? ORDER BY created_at DESC LIMIT 1", arrayOf(roomId)).use {
