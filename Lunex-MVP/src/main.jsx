@@ -55,6 +55,7 @@ function App() {
   const peerRef = useRef(null);
   const pendingIceRef = useRef([]);
   const pendingLocalIceRef = useRef([]);
+  const callTimerRef = useRef(null);
   const localStreamRef = useRef(null);
   const callRef = useRef(null);
   const [callState, setCallState] = useState('idle');
@@ -114,6 +115,7 @@ function App() {
     if (notify && current) socket.emit('call:end', { callId: current.callId, conversationId: current.conversationId });
     try { peerRef.current?.close(); } catch {}
     peerRef.current = null; pendingIceRef.current = []; pendingLocalIceRef.current = [];
+    if (callTimerRef.current) clearTimeout(callTimerRef.current); callTimerRef.current = null;
     localStreamRef.current?.getTracks().forEach(track => track.stop());
     localStreamRef.current = null; callRef.current = null;
     setLocalStream(null); setRemoteStream(null); setIncomingCall(null); setCallState('idle'); setCallMuted(false); setCameraOff(false);
@@ -126,8 +128,9 @@ function App() {
     stream.getTracks().forEach(track => pc.addTrack(track, stream));
     pc.ontrack = event => setRemoteStream(event.streams[0]);
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'connected') setCallState('connected');
-      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') { closeCall(false); setNotice('Соединение звонка потеряно. Проверь сеть или TURN-сервер.'); }
+      if (callRef.current?.callId !== call.callId) return;
+      if (pc.connectionState === 'connected') { if (callTimerRef.current) clearTimeout(callTimerRef.current); callTimerRef.current = null; setCallState('connected'); }
+      if (pc.connectionState === 'failed') { closeCall(false); setNotice('Соединение звонка потеряно. Проверь сеть или TURN-сервер.'); }
     };
     pc.onicecandidate = event => {
       if (!event.candidate || callRef.current?.callId !== call.callId) return;
@@ -151,6 +154,7 @@ function App() {
       socket.emit('call:invite', { ...call, toUserId: call.peerId, offer: pc.localDescription });
       call.signalingReady = true;
       for (const payload of pendingLocalIceRef.current.splice(0)) socket.emit('call:signal', payload);
+      callTimerRef.current = setTimeout(() => { if (callRef.current?.callId === call.callId && peerRef.current?.connectionState !== 'connected') { closeCall(true); setNotice('Не удалось дозвониться. Проверь подключение и TURN-сервер.'); } }, 35000);
     } catch (error) { closeCall(false); setNotice(error?.message || 'Не удалось начать звонок. Проверь разрешения микрофона и камеры.'); }
   }
   async function acceptCall() {
