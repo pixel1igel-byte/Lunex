@@ -22,6 +22,15 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Videocam
@@ -67,6 +76,8 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
     var chatDraft by remember { mutableStateOf("") }
     var localMessages by remember { mutableStateOf(emptyList<LocalNodeMessage>()) }
     var roomFiles by remember { mutableStateOf(emptyList<LocalNodeFile>()) }
+    var settingsOpen by remember { mutableStateOf(false) }
+    var connectPanelOpen by remember { mutableStateOf(false) }
     var roomPeers by remember { mutableStateOf(emptyList<LocalRoomPeer>()) }
     var callState by remember { mutableStateOf("idle") }
     var callMode by remember { mutableStateOf("audio") }
@@ -141,188 +152,224 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
         }
     }
     val localEndpoints = remember(transport) { transport.localEndpoints() }
-    val shownStatus = status.ifBlank { nodeState.status }
-    Column(Modifier.fillMaxSize().background(Color(0xFF0D0B16)).padding(18.dp)) {
-        Text("LUNEX · LOCAL NODE", color = Color(0xFFB56BFF), fontSize = 22.sp, fontWeight = FontWeight.Black)
-        Text("ID узла: " + store.serverId(), color = Color(0xFFAAA0BC), fontSize = 12.sp)
-        Text("Порт TCP: 45873", color = Color(0xFFAAA0BC), fontSize = 12.sp)
-        Text("Адреса этого телефона:", color = Color(0xFFAAA0BC), fontSize = 12.sp)
-        Text(localEndpoints.joinToString("\n").ifBlank { "Активные IP-адреса пока не найдены." }, color = Color.White, fontSize = 11.sp)
-        if (localEndpoints.isNotEmpty()) {
-            TextButton(onClick = {
-                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                clipboard.setPrimaryClip(ClipData.newPlainText("Lunex node endpoints", localEndpoints.joinToString("\n")))
-                status = "Адреса узла скопированы."
-            }) { Icon(Icons.Default.ContentCopy, contentDescription = null); Text("Скопировать адреса") }
+    val shownStatus = status
+    Column(Modifier.fillMaxSize().background(Color(0xFF0D0B16))) {
+        Row(Modifier.fillMaxWidth().background(Color(0xFF191426)).padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Surface(shape = androidx.compose.foundation.shape.CircleShape, color = Color(0xFFB56BFF), modifier = Modifier.size(42.dp)) {
+                Box(contentAlignment = androidx.compose.ui.Alignment.Center) { Text("L", color = Color(0xFF0D0B16), fontSize = 24.sp, fontWeight = FontWeight.Black) }
+            }
+            Column(Modifier.weight(1f).padding(start = 11.dp)) {
+                Text("Lunex", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text(if (loggedIn) activeName else "Личные сообщения", color = Color(0xFFAAA0BC), fontSize = 12.sp)
+            }
+            if (loggedIn) {
+                IconButton(onClick = { connectPanelOpen = !connectPanelOpen }) { Icon(Icons.Default.Add, "Новый чат", tint = Color(0xFFCB91FF)) }
+                IconButton(onClick = { settingsOpen = !settingsOpen }) { Icon(Icons.Default.Settings, "Настройки", tint = Color(0xFFCB91FF)) }
+            }
         }
         if (!loggedIn) {
-            Spacer(Modifier.height(20.dp))
-            Text(if (isRegister) "Создать аккаунт на телефоне" else "Войти в локальный аккаунт", color = Color.White, fontSize = 18.sp)
-            OutlinedTextField(username, { username = it }, label = { Text("Логин") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            if (isRegister) OutlinedTextField(displayName, { displayName = it }, label = { Text("Отображаемое имя") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(password, { password = it }, label = { Text("Пароль (10+ символов)") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), singleLine = true, modifier = Modifier.fillMaxWidth())
-            Button(onClick = { scope.launch { try {
-                val id = withContext(Dispatchers.IO) { if (isRegister) store.register(username, displayName, password.toCharArray()) else store.login(username, password.toCharArray()) }
-                activeName = id.displayName; loggedIn = true; password = ""; rooms = store.rooms(); status = ""
-            } catch (e: Exception) { status = e.message ?: "Ошибка локального аккаунта" } } }, modifier = Modifier.fillMaxWidth()) { Text(if (isRegister) "Создать локальный аккаунт" else "Войти") }
-            TextButton(onClick = { isRegister = !isRegister; status = "" }) { Text(if (isRegister) "Уже есть аккаунт? Войти" else "Создать аккаунт") }
-            Text("Учётная запись хранится в базе SQLite на этом телефоне; пароль проверяется локально.", color = Color(0xFFAAA0BC), fontSize = 12.sp)
+            Column(Modifier.fillMaxSize().padding(horizontal = 22.dp), verticalArrangement = Arrangement.Center) {
+                Text(if (isRegister) "Создать аккаунт" else "С возвращением", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                Text("Твои чаты. Твои устройства. Твоя сеть.", color = Color(0xFFAAA0BC), fontSize = 14.sp, modifier = Modifier.padding(top = 6.dp, bottom = 22.dp))
+                OutlinedTextField(username, { username = it }, label = { Text("Логин") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                if (isRegister) OutlinedTextField(displayName, { displayName = it }, label = { Text("Имя в Lunex") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
+                OutlinedTextField(password, { password = it }, label = { Text("Пароль (10+ символов)") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
+                Button(onClick = { scope.launch { try {
+                    val id = withContext(Dispatchers.IO) { if (isRegister) store.register(username, displayName, password.toCharArray()) else store.login(username, password.toCharArray()) }
+                    activeName = id.displayName; loggedIn = true; password = ""; rooms = store.rooms(); status = ""
+                } catch (e: Exception) { status = e.message ?: "Ошибка локального аккаунта" } } }, modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) { Text(if (isRegister) "Создать аккаунт" else "Войти") }
+                TextButton(onClick = { isRegister = !isRegister; status = "" }, modifier = Modifier.align(androidx.compose.ui.Alignment.CenterHorizontally)) { Text(if (isRegister) "Уже есть аккаунт? Войти" else "Создать аккаунт") }
+                Text("Аккаунт хранится на этом устройстве.", color = Color(0xFFAAA0BC), fontSize = 12.sp)
+            }
         } else {
-            Text("Вошли как " + activeName, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            Text("Узлы рядом или подключённые вручную: ${peers.size}", color = Color(0xFFAAA0BC), fontSize = 12.sp)
-            peers.forEach { peer -> Text("• ${peer.name} · ${peer.host.hostAddress}:${peer.port}", color = Color(0xFFAAA0BC), fontSize = 12.sp) }
-            OutlinedTextField(peerEndpoint, { peerEndpoint = it }, label = { Text("Адрес узла через интернет (IP:порт)") }, supportingText = { Text("Для прямого подключения узел должен быть доступен извне; может понадобиться проброс порта.") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            Button(onClick = {
-                try {
-                    val endpoint = peerEndpoint.trim()
-                    val split = endpoint.lastIndexOf(':')
-                    require(split > 0 && split < endpoint.lastIndex) { "Введи адрес в формате IP:порт." }
-                    val host = endpoint.substring(0, split).removePrefix("[").removeSuffix("]")
-                    val port = endpoint.substring(split + 1).toInt()
-                    require(port in 1..65535) { "Порт должен быть от 1 до 65535." }
-                    val peer = LanPeer("Direct $endpoint", java.net.InetAddress.getByName(host), port)
-                    val raw = inviteToJoin.trim()
-                    val token = Regex("[?&]token=([^&]+)").find(raw)?.groupValues?.get(1)?.let { java.net.URLDecoder.decode(it, "UTF-8") } ?: raw
-                    require(token.isNotBlank()) { "Вставь код приглашения комнаты." }
-                    status = "Подключаюсь к узлу $endpoint…"
-                    transport.join(peer, token) { ok, message ->
-                        status = message
-                        if (ok) {
-                            rooms = store.rooms()
-                            selected = rooms.lastOrNull()
-                            selected?.let { localMessages = store.messages(it.id); roomFiles = store.files(it.id) }
-                            peerEndpoint = ""
-                            inviteToJoin = ""
-                        }
-                    }
-                } catch (e: Exception) { status = e.message ?: "Неверный адрес узла." }
-            }, modifier = Modifier.fillMaxWidth(), enabled = peerEndpoint.isNotBlank() && inviteToJoin.isNotBlank()) { Text("Подключиться напрямую") }
-            OutlinedTextField(inviteToJoin, { inviteToJoin = it }, label = { Text("Код/ссылка приглашения комнаты") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            Button(onClick = {
-                val raw = inviteToJoin.trim()
-                val token = Regex("[?&]token=([^&]+)").find(raw)?.groupValues?.get(1)
-                    ?.let { java.net.URLDecoder.decode(it, "UTF-8") } ?: raw
-                if (peers.isEmpty()) {
-                    status = "Другие узлы пока не обнаружены. Для текущей версии оба телефона должны быть в одной Wi-Fi сети."
-                } else {
-                    status = "Пробую подключиться к ${peers.size} узлам…"
-                    fun tryPeer(index: Int) {
-                        if (index >= peers.size) {
-                            status = "Не удалось найти узел, которому принадлежит это приглашение."
-                            return
-                        }
-                        transport.join(peers[index], token) { ok, message ->
-                            if (ok) {
-                                status = message
-                                rooms = store.rooms()
-                                selected = rooms.lastOrNull()
-                                selected?.let { localMessages = store.messages(it.id); roomFiles = store.files(it.id) }
-                                inviteToJoin = ""
-                            } else tryPeer(index + 1)
-                        }
-                    }
-                    tryPeer(0)
-                }
-            }, modifier = Modifier.fillMaxWidth(), enabled = inviteToJoin.isNotBlank()) { Text("Подключиться к приглашению") }
-            OutlinedTextField(roomName, { roomName = it }, label = { Text("Название комнаты") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            Button(onClick = { try { selected = store.createRoom(roomName); rooms = store.rooms(); roomName = ""; invite = ""; status = "" } catch (e: Exception) { status = e.message ?: "Ошибка" } }, modifier = Modifier.fillMaxWidth()) { Text("Создать комнату") }
-            LazyColumn(Modifier.weight(1f)) { items(rooms, key = { it.id }) { room ->
-                Row(Modifier.fillMaxWidth().clickable { selected = room; invite = ""; localMessages = store.messages(room.id); roomFiles = store.files(room.id) }.padding(8.dp)) {
-                    Column(Modifier.weight(1f)) { Text(room.name, color = Color.White); Text("ID: " + room.id, color = Color(0xFFAAA0BC), fontSize = 10.sp) }
-                    TextButton(onClick = { try { selected = room; invite = store.createInvite(room.id); transport.syncAll(); status = "" } catch (e: Exception) { status = e.message ?: "Ошибка" } }) { Text("Пригласить") }
-                }
-            } }
-            selected?.let { room ->
-                if (invite.isNotBlank()) {
-                    val inviteUri = "lunex://join/" + room.id + "?token=" + invite
-                    Text("Приглашение", color = Color(0xFFAAA0BC), fontSize = 11.sp)
-                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                        Text(inviteUri, color = Color.White, fontSize = 10.sp, modifier = Modifier.weight(1f))
-                        IconButton(onClick = {
+            if (settingsOpen) {
+                Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), color = Color(0xFF191426), shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp)) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Text("Настройки устройства", color = Color.White, fontWeight = FontWeight.Bold)
+                        Text("ID узла: " + store.serverId(), color = Color(0xFFAAA0BC), fontSize = 11.sp)
+                        Text("TCP-порт: 45873", color = Color(0xFFAAA0BC), fontSize = 11.sp)
+                        Text(localEndpoints.joinToString("\n").ifBlank { "Адреса устройства пока недоступны" }, color = Color.White, fontSize = 11.sp)
+                        if (localEndpoints.isNotEmpty()) TextButton(onClick = {
                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("Lunex invitation", inviteUri))
-                            status = "Приглашение скопировано."
-                        }) { Icon(Icons.Default.ContentCopy, contentDescription = "Скопировать приглашение", tint = Color(0xFFB56BFF)) }
+                            clipboard.setPrimaryClip(ClipData.newPlainText("Lunex node endpoints", localEndpoints.joinToString("\n")))
+                            status = "Адреса устройства скопированы."
+                        }) { Icon(Icons.Default.ContentCopy, null); Text("Скопировать адреса") }
+                        Text("Подключённых устройств: ${peers.size}", color = Color(0xFFAAA0BC), fontSize = 12.sp)
+                        TextButton(onClick = { settingsOpen = false }) { Text("Готово") }
+                        TextButton(onClick = { loggedIn = false; isRegister = false; selected = null; invite = ""; settingsOpen = false }) { Text("Выйти из аккаунта", color = Color(0xFFFF8295)) }
                     }
-                } else {
-                    Text("Нажми «Пригласить», чтобы создать ссылку для этой комнаты.", color = Color(0xFFAAA0BC), fontSize = 11.sp)
-                }
-                Text("Участники и звонки", color = Color.White, fontWeight = FontWeight.Bold)
-                if (roomPeers.isEmpty()) {
-                    Text("Пока нет подключённых участников этой комнаты.", color = Color(0xFFAAA0BC), fontSize = 11.sp)
-                } else {
-                    roomPeers.take(12).forEach { peer ->
-                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(peer.name, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                Text(peer.id, color = Color(0xFFAAA0BC), fontSize = 9.sp)
-                            }
-                            IconButton(onClick = {
-                                callMode = "audio"
-                                withCallPermissions { callManager.startOutgoing(room.id, peer.id, "audio") }
-                            }, modifier = Modifier.size(40.dp)) {
-                                Icon(Icons.Default.Call, contentDescription = "Голосовой звонок", tint = Color(0xFFB56BFF))
-                            }
-                            IconButton(onClick = {
-                                callMode = "video"
-                                withCallPermissions { callManager.startOutgoing(room.id, peer.id, "video") }
-                            }, modifier = Modifier.size(40.dp)) {
-                                Icon(Icons.Default.Videocam, contentDescription = "Видеозвонок", tint = Color(0xFFB56BFF))
-                            }
-                        }
-                    }
-                }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Файлы комнаты", color = Color.White, fontWeight = FontWeight.Bold)
-                    OutlinedButton(
-                        onClick = { filePicker.launch(arrayOf("*/*")) },
-                        enabled = store.inviteTokenForRoom(room.id) != null
-                    ) {
-                        Icon(Icons.Default.AttachFile, contentDescription = null)
-                        Text("Прикрепить (до 25 МБ)")
-                    }
-                }
-                if (roomFiles.isEmpty()) {
-                    Text("Пока нет файлов в этой комнате.", color = Color(0xFFAAA0BC), fontSize = 11.sp)
-                } else {
-                    roomFiles.takeLast(5).forEach { file ->
-                        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(file.fileName, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                Text("${(file.sizeBytes + 1023) / 1024} КБ · ${file.senderName}", color = Color(0xFFAAA0BC), fontSize = 10.sp)
-                            }
-                            TextButton(onClick = {
-                                try {
-                                    val fileUri = FileProvider.getUriForFile(context, "${context.packageName}.files", java.io.File(file.localPath))
-                                    val intent = Intent(Intent.ACTION_VIEW).setDataAndType(fileUri, file.mimeType)
-                                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    context.startActivity(Intent.createChooser(intent, "Открыть файл"))
-                                } catch (e: Exception) {
-                                    status = e.message ?: "Не удалось открыть файл."
-                                }
-                            }) { Text("Открыть") }
-                        }
-                    }
-                }
-                Text("Сообщения комнаты", color = Color.White, fontWeight = FontWeight.Bold)
-                LazyColumn(Modifier.weight(1f, fill = false).heightIn(max = 220.dp)) {
-                    items(localMessages, key = { it.id }) { msg ->
-                        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                            Text(msg.senderName, color = Color(0xFFB56BFF), fontSize = 11.sp)
-                            Text(msg.body, color = Color.White, fontSize = 14.sp)
-                        }
-                    }
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    OutlinedTextField(chatDraft, { chatDraft = it }, label = { Text("Сообщение") }, modifier = Modifier.weight(1f))
-                    Button(onClick = {
-                        val roomToken = store.inviteTokenForRoom(room.id)
-                        if (roomToken == null) status = "Для этой комнаты нет действующего ключа приглашения."
-                        else { transport.send(room.id, activeName, chatDraft); chatDraft = ""; localMessages = store.messages(room.id) }
-                    }, enabled = chatDraft.isNotBlank()) { Text("Отпр.") }
                 }
             }
-            TextButton(onClick = { loggedIn = false; isRegister = false; selected = null; invite = "" }) { Text("Выйти") }
+            if (connectPanelOpen) {
+                Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), color = Color(0xFF191426), shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp)) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Новое подключение", color = Color.White, fontWeight = FontWeight.Bold)
+                        OutlinedTextField(peerEndpoint, { peerEndpoint = it }, label = { Text("Адрес устройства (IP:порт)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(inviteToJoin, { inviteToJoin = it }, label = { Text("Код или ссылка приглашения") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        Button(onClick = {
+                            try {
+                                val endpoint = peerEndpoint.trim()
+                                val split = endpoint.lastIndexOf(':')
+                                require(split > 0 && split < endpoint.lastIndex) { "Введи адрес в формате IP:порт." }
+                                val host = endpoint.substring(0, split).removePrefix("[").removeSuffix("]")
+                                val port = endpoint.substring(split + 1).toInt()
+                                require(port in 1..65535) { "Порт должен быть от 1 до 65535." }
+                                val peer = LanPeer("Direct $endpoint", java.net.InetAddress.getByName(host), port)
+                                val raw = inviteToJoin.trim()
+                                val token = Regex("[?&]token=([^&]+)").find(raw)?.groupValues?.get(1)?.let { java.net.URLDecoder.decode(it, "UTF-8") } ?: raw
+                                status = "Подключаюсь…"
+                                transport.join(peer, token) { ok, message ->
+                                    status = message
+                                    if (ok) { rooms = store.rooms(); selected = rooms.lastOrNull(); selected?.let { localMessages = store.messages(it.id); roomFiles = store.files(it.id) }; peerEndpoint = ""; inviteToJoin = ""; connectPanelOpen = false }
+                                }
+                            } catch (e: Exception) { status = e.message ?: "Неверный адрес." }
+                        }, enabled = peerEndpoint.isNotBlank() && inviteToJoin.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Подключиться напрямую") }
+                        HorizontalDivider(color = Color(0xFF393044))
+                        OutlinedTextField(roomName, { roomName = it }, label = { Text("Название новой комнаты") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        Button(onClick = {
+                            try { selected = store.createRoom(roomName); rooms = store.rooms(); roomName = ""; invite = ""; status = ""; connectPanelOpen = false; localMessages = emptyList() }
+                            catch (e: Exception) { status = e.message ?: "Ошибка" }
+                        }, enabled = roomName.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Создать комнату") }
+                        TextButton(onClick = { connectPanelOpen = false }) { Text("Отмена") }
+                    }
+                }
+            }
+            if (selected == null) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Сообщения", color = Color.White, fontSize = 23.sp, fontWeight = FontWeight.Bold)
+                        Text("Твои комнаты и групповые чаты", color = Color(0xFFAAA0BC), fontSize = 12.sp)
+                    }
+                    Surface(color = Color(0xFF241B35), shape = androidx.compose.foundation.shape.CircleShape) {
+                        Text("${rooms.size}", color = Color(0xFFCB91FF), fontSize = 13.sp, modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp))
+                    }
+                }
+                if (rooms.isEmpty()) {
+                    Column(Modifier.weight(1f).fillMaxWidth().padding(28.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+                        Surface(shape = androidx.compose.foundation.shape.CircleShape, color = Color(0xFF241B35), modifier = Modifier.size(82.dp)) {
+                            Box(contentAlignment = androidx.compose.ui.Alignment.Center) { Icon(Icons.Default.ChatBubbleOutline, null, tint = Color(0xFFB56BFF), modifier = Modifier.size(36.dp)) }
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        Text("Пока нет чатов", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Text("Создай комнату или присоединись по приглашению.", color = Color(0xFFAAA0BC), fontSize = 13.sp)
+                        Button(onClick = { connectPanelOpen = true }, modifier = Modifier.padding(top = 14.dp)) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("Новый чат") }
+                    }
+                } else {
+                    LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        items(rooms, key = { it.id }) { room ->
+                            val last = store.messages(room.id).lastOrNull()
+                            Surface(Modifier.fillMaxWidth().clickable { selected = room; invite = ""; localMessages = store.messages(room.id); roomFiles = store.files(room.id); roomPeers = transport.roomPeers(room.id) }, color = Color(0xFF191622), shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp)) {
+                                Row(Modifier.padding(horizontal = 12.dp, vertical = 13.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                                    Surface(shape = androidx.compose.foundation.shape.CircleShape, color = Color(0xFF38234A), modifier = Modifier.size(52.dp)) {
+                                        Box(contentAlignment = androidx.compose.ui.Alignment.Center) { Text(room.name.take(1).uppercase(), color = Color(0xFFCB91FF), fontSize = 21.sp, fontWeight = FontWeight.Bold) }
+                                    }
+                                    Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                                        Text(room.name, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                                        Text(last?.body ?: "Комната Lunex", color = Color(0xFFAAA0BC), fontSize = 13.sp, maxLines = 1)
+                                    }
+                                    TextButton(onClick = { try { selected = room; invite = store.createInvite(room.id); transport.syncAll(); localMessages = store.messages(room.id); roomPeers = transport.roomPeers(room.id) } catch (e: Exception) { status = e.message ?: "Ошибка" } }) { Text("Пригласить", color = Color(0xFFCB91FF)) }
+                                }
+                            }
+                        }
+                    }
+                }
+                NavigationBar(containerColor = Color(0xFF191426), contentColor = Color(0xFFCB91FF), modifier = Modifier.height(62.dp)) {
+                    NavigationBarItem(selected = true, onClick = { selected = null }, icon = { Icon(Icons.Default.ChatBubbleOutline, null) }, label = { Text("Чаты") })
+                    NavigationBarItem(selected = false, onClick = { connectPanelOpen = true }, icon = { Icon(Icons.Default.Add, null) }, label = { Text("Новый чат") })
+                    NavigationBarItem(selected = false, onClick = { settingsOpen = true }, icon = { Icon(Icons.Default.Settings, null) }, label = { Text("Настройки") })
+                }
+            } else {
+                val room = selected!!
+                Column(Modifier.fillMaxSize()) {
+                    Row(Modifier.fillMaxWidth().background(Color(0xFF191426)).padding(horizontal = 6.dp, vertical = 5.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        IconButton(onClick = { selected = null; invite = "" }) { Icon(Icons.Default.ArrowBack, "Назад", tint = Color(0xFFCB91FF)) }
+                        Surface(shape = androidx.compose.foundation.shape.CircleShape, color = Color(0xFF38234A), modifier = Modifier.size(40.dp)) {
+                            Box(contentAlignment = androidx.compose.ui.Alignment.Center) { Text(room.name.take(1).uppercase(), color = Color(0xFFCB91FF), fontWeight = FontWeight.Bold, fontSize = 17.sp) }
+                        }
+                        Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                            Text(room.name, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text(if (roomPeers.isEmpty()) "Комната · ${localMessages.size} сообщений" else "${roomPeers.size} участников", color = Color(0xFFAAA0BC), fontSize = 11.sp)
+                        }
+                        IconButton(onClick = { try { invite = store.createInvite(room.id); transport.syncAll(); status = "Ссылка приглашения создана." } catch (e: Exception) { status = e.message ?: "Ошибка" } }) { Icon(Icons.Default.Add, "Пригласить", tint = Color(0xFFCB91FF)) }
+                    }
+                    if (invite.isNotBlank()) {
+                        Surface(Modifier.fillMaxWidth().padding(8.dp), color = Color(0xFF241B35), shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)) {
+                            Row(Modifier.padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("Приглашение в комнату", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    Text("Ссылка готова — нажми копировать", color = Color(0xFFAAA0BC), fontSize = 11.sp)
+                                }
+                                IconButton(onClick = {
+                                    val uri = "lunex://join/${room.id}?token=${invite}"
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("Lunex invitation", uri))
+                                    status = "Приглашение скопировано."
+                                }) { Icon(Icons.Default.ContentCopy, "Копировать приглашение", tint = Color(0xFFCB91FF)) }
+                                IconButton(onClick = { invite = "" }) { Icon(Icons.Default.Close, "Скрыть приглашение", tint = Color(0xFFAAA0BC)) }
+                            }
+                        }
+                    }
+                    if (roomPeers.isNotEmpty()) {
+                        Surface(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), color = Color(0xFF15121D), shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)) {
+                            Column(Modifier.padding(horizontal = 10.dp, vertical = 5.dp)) {
+                                Text("Участники", color = Color(0xFFAAA0BC), fontSize = 10.sp)
+                                roomPeers.take(4).forEach { peer ->
+                                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                                        Text(peer.name, color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                                        IconButton(onClick = { callMode = "audio"; withCallPermissions { callManager.startOutgoing(room.id, peer.id, "audio") } }, modifier = Modifier.size(36.dp)) { Icon(Icons.Default.Call, "Позвонить", tint = Color(0xFFCB91FF)) }
+                                        IconButton(onClick = { callMode = "video"; withCallPermissions { callManager.startOutgoing(room.id, peer.id, "video") } }, modifier = Modifier.size(36.dp)) { Icon(Icons.Default.Videocam, "Видеозвонок", tint = Color(0xFFCB91FF)) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                        items(localMessages, key = { it.id }) { msg ->
+                            val own = msg.senderName == activeName
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = if (own) Arrangement.End else Arrangement.Start) {
+                                Column(Modifier.widthIn(max = 310.dp).background(if (own) Color(0xFF57317B) else Color(0xFF211E2B), shape = androidx.compose.foundation.shape.RoundedCornerShape(topStart = 17.dp, topEnd = 17.dp, bottomStart = if (own) 17.dp else 5.dp, bottomEnd = if (own) 5.dp else 17.dp)).padding(horizontal = 13.dp, vertical = 9.dp)) {
+                                    if (!own) Text(msg.senderName, color = Color(0xFFCB91FF), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                    Text(msg.body, color = Color.White, fontSize = 15.sp)
+                                }
+                            }
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth().background(Color(0xFF191426)).padding(horizontal = 9.dp, vertical = 7.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        IconButton(onClick = { filePicker.launch(arrayOf("*/*")) }, enabled = store.inviteTokenForRoom(room.id) != null, modifier = Modifier.size(42.dp)) { Icon(Icons.Default.AttachFile, "Прикрепить файл", tint = Color(0xFFCB91FF)) }
+                        OutlinedTextField(value = chatDraft, onValueChange = { chatDraft = it }, placeholder = { Text("Сообщение…", color = Color(0xFFAAA0BC)) }, modifier = Modifier.weight(1f), maxLines = 4, shape = androidx.compose.foundation.shape.RoundedCornerShape(22.dp))
+                        IconButton(onClick = {
+                            val text = chatDraft.trim()
+                            if (text.isNotEmpty()) {
+                                val roomToken = store.inviteTokenForRoom(room.id)
+                                if (roomToken == null) status = "Сначала создай приглашение в эту комнату."
+                                else { transport.send(room.id, activeName, text); chatDraft = ""; localMessages = store.messages(room.id) }
+                            }
+                        }, enabled = chatDraft.isNotBlank(), modifier = Modifier.size(44.dp)) { Icon(Icons.Default.Send, "Отправить", tint = if (chatDraft.isNotBlank()) Color(0xFFCB91FF) else Color(0xFF62596E)) }
+                    }
+                    if (roomFiles.isNotEmpty()) {
+                        LazyColumn(Modifier.fillMaxWidth().heightIn(max = 92.dp).background(Color(0xFF15121D)), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
+                            items(roomFiles.takeLast(3), key = { it.id }) { file ->
+                                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                                    Icon(Icons.Default.AttachFile, null, tint = Color(0xFFCB91FF), modifier = Modifier.size(16.dp))
+                                    Text(file.fileName, color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f), maxLines = 1)
+                                    TextButton(onClick = { runCatching {
+                                        val fileUri = FileProvider.getUriForFile(context, "${context.packageName}.files", java.io.File(file.localPath))
+                                        context.startActivity(Intent.createChooser(Intent(Intent.ACTION_VIEW).setDataAndType(fileUri, file.mimeType).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "Открыть файл"))
+                                    }.onFailure { status = it.message ?: "Не удалось открыть файл." } }) { Text("Открыть") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (status.isNotBlank()) {
+                Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), color = Color(0xFF2B2138), shape = androidx.compose.foundation.shape.RoundedCornerShape(10.dp)) {
+                    Row(Modifier.padding(horizontal = 10.dp, vertical = 7.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Text(status, color = Color(0xFFE7DDF2), fontSize = 11.sp, modifier = Modifier.weight(1f))
+                        IconButton(onClick = { status = "" }, modifier = Modifier.size(24.dp)) { Icon(Icons.Default.Close, "Закрыть сообщение", tint = Color(0xFFAAA0BC)) }
+                    }
+                }
+            }
         }
         if (shownStatus.isNotBlank()) Text(shownStatus, color = Color(0xFFFF8D9B), fontSize = 12.sp)
     }
