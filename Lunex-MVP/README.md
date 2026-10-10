@@ -7,7 +7,7 @@ Lunex is an early-stage web messenger with account registration, password hashin
 The web client now includes one-to-one WebRTC call controls in direct messages. The server authenticates call signaling and checks that both participants belong to the relevant direct conversation. Media is exchanged peer-to-peer when network conditions allow.
 
 - The web app must be served over HTTPS (or localhost during development) for browser camera/microphone access.
-- The current ICE configuration includes a public STUN server. Some networks require a TURN relay; set-up and credentials for a production TURN service are not bundled.
+- The default ICE configuration includes a public STUN server. Some networks require a TURN relay. To enable one, configure `LUNEX_TURN_URLS` (comma-separated `turn:`/`turns:` URLs) and `LUNEX_TURN_SECRET` on the server. Lunex then issues short-lived TURN credentials using the TURN REST shared-secret mechanism; the TURN service itself must be operated/configured separately.
 - This implementation has not yet been verified in a live call between two separate devices.
 - The native Android client is not yet wired to this WebRTC call flow.
 
