@@ -443,6 +443,20 @@ app.patch('/api/communities/:id/channels/:channelId', authHttp, (req, res) => {
   }
   saveDb(); io.emit('communities:changed', { communityId: community.id }); res.json(channel);
 });
+app.delete('/api/communities/:id/channels/:channelId/messages/:messageId', authHttp, (req, res) => {
+  const community = db.communities.find(item => item.id === req.params.id);
+  const channel = community?.channels.find(item => item.id === req.params.channelId);
+  if (!community || !channel) return res.status(404).json({ error: 'Канал не найден.' });
+  if (!hasPermission(community, req.user.id, 'view', channel)) return res.status(403).json({ error: 'Нет доступа к этому каналу.' });
+  const history = db.messages[channel.id] || [];
+  const message = history.find(item => item.id === req.params.messageId);
+  if (!message) return res.status(404).json({ error: 'Сообщение не найдено.' });
+  if (message.userId !== req.user.id && !hasPermission(community, req.user.id, 'manage_messages', channel)) return res.status(403).json({ error: 'Можно удалять только свои сообщения.' });
+  db.messages[channel.id] = history.filter(item => item.id !== message.id);
+  saveDb();
+  io.to(channel.id).emit('message:deleted', { channelId: channel.id, messageId: message.id });
+  res.json({ ok: true });
+});
 app.delete('/api/communities/:id/channels/:channelId', authHttp, (req, res) => {
   const community = db.communities.find(item => item.id === req.params.id);
   if (!community) return res.status(404).json({ error: 'Сообщество не найдено.' });
