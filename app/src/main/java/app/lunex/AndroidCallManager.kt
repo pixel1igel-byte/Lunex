@@ -163,6 +163,14 @@ internal class AndroidCallManager(
         transport.setCallSignalListener { event, payload -> handleLocalSignal(event, payload) }
     }
 
+    fun unbindLocal() {
+        localTransport?.setCallSignalListener(null)
+        localTransport = null
+        localRoomId = ""
+        localNodeId = ""
+        localDisplayName = ""
+    }
+
     private fun emitSignal(event: String, payload: JSONObject, targetOverride: String? = null) {
         val cloudSocket = socket
         if (cloudSocket != null) {
