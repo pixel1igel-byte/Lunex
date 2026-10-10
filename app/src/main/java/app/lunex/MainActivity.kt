@@ -133,6 +133,15 @@ private fun LunexApp() {
     var communityDialog by remember { mutableStateOf(false) }
     var communityName by remember { mutableStateOf("") }
 
+    suspend fun loadDms(base: String, authToken: String): List<DirectChat> {
+        val arr = requestArray(base, "/api/dms", authToken)
+        return (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i); val other = o.optJSONObject("other") ?: JSONObject()
+            DirectChat(o.optString("id"), other.optString("username"), other.optString("displayName"), o.optString("lastMessage"))
+        }
+    }
+
+
     fun disconnect() { socket?.disconnect(); socket?.off(); socket = null }
     fun connectSocket(authToken: String) {
         disconnect()
@@ -150,7 +159,7 @@ private fun LunexApp() {
                 val channelId = event.optString("channelId")
                 val item = ChatMessage(msg.optString("id"), msg.optString("user"), msg.optString("text"), msg.optString("time"), msg.optString("userId"))
                 if (channelId == activeChannelRef.get() && activeDmRef.get().isBlank()) {
-                    android.os.Handler(mainLooper).post { messages = (messages + item).takeLast(500) }
+                    android.os.Handler(android.os.Looper.getMainLooper()).post { messages = (messages + item).takeLast(500) }
                 }
             })
             s.on("dm:new", Emitter.Listener { args ->
@@ -159,29 +168,22 @@ private fun LunexApp() {
                 val id = event.optString("conversationId")
                 if (activeDmRef.get() == id) {
                     val item = ChatMessage(msg.optString("id"), msg.optString("user"), msg.optString("text"), msg.optString("time"), msg.optString("userId"))
-                    android.os.Handler(mainLooper).post { messages = (messages + item).takeLast(500) }
+                    android.os.Handler(android.os.Looper.getMainLooper()).post { messages = (messages + item).takeLast(500) }
                 }
-                android.os.Handler(mainLooper).post { scope.launch { runCatching { loadDms(server, authToken) }.onSuccess { dms = it } } }
+                android.os.Handler(android.os.Looper.getMainLooper()).post { scope.launch { runCatching { loadDms(server, authToken) }.onSuccess { dms = it } } }
             })
             s.on("message:error", Emitter.Listener { args ->
                 val err = (args.firstOrNull() as? JSONObject)?.optString("error") ?: "Не удалось отправить сообщение"
-                android.os.Handler(mainLooper).post { notice = err }
+                android.os.Handler(android.os.Looper.getMainLooper()).post { notice = err }
             })
             s.on(Socket.EVENT_CONNECT_ERROR) { args ->
-                android.os.Handler(mainLooper).post { notice = "Не удалось подключиться к серверу сообщений. Проверь адрес сервера." }
+                android.os.Handler(android.os.Looper.getMainLooper()).post { notice = "Не удалось подключиться к серверу сообщений. Проверь адрес сервера." }
             }
             s.connect()
             socket = s
         } catch (e: Exception) { notice = "Ошибка подключения: ${e.message ?: "unknown"}" }
     }
 
-    suspend fun loadDms(base: String, authToken: String): List<DirectChat> {
-        val arr = requestArray(base, "/api/dms", authToken)
-        return (0 until arr.length()).map { i ->
-            val o = arr.getJSONObject(i); val other = o.optJSONObject("other") ?: JSONObject()
-            DirectChat(o.optString("id"), other.optString("username"), other.optString("displayName"), o.optString("lastMessage"))
-        }
-    }
 
     suspend fun refreshChannel(channel: String, authToken: String) {
         val arr = requestArray(server, "/api/messages/${java.net.URLEncoder.encode(channel, "UTF-8")}", authToken)
