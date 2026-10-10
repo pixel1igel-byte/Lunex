@@ -36,8 +36,10 @@ private const val MAX_REQUEST_FRAME_CHARS = 65_536
 private const val MAX_RESPONSE_FRAME_CHARS = 24_000_000
 private const val MAX_FILE_BYTES = 25L * 1024L * 1024L
 private const val FILE_CHUNK_BYTES = 24 * 1024
+private val CALL_EVENTS = setOf("call:invite", "call:accept", "call:signal", "call:reject", "call:end")
 
 internal data class LanPeer(val name: String, val host: InetAddress, val port: Int, val serviceName: String = name)
+internal data class LocalRoomPeer(val id: String, val name: String, val host: InetAddress, val port: Int)
 
 internal class LocalNodeTransport(
     context: Context,
@@ -53,6 +55,8 @@ internal class LocalNodeTransport(
     @Volatile private var io = Executors.newCachedThreadPool()
     @Volatile private var maintenance: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
     private val peers = ConcurrentHashMap<String, LanPeer>()
+    private val seenCallSignals = ConcurrentHashMap<String, Long>()
+    @Volatile private var callSignalListener: ((String, JSONObject) -> Unit)? = null
     @Volatile private var running = false
     @Volatile private var server: ServerSocket? = null
     private var registration: NsdManager.RegistrationListener? = null
@@ -109,6 +113,44 @@ internal class LocalNodeTransport(
         maintenance.shutdownNow()
     }
 
+    fun setCallSignalListener(listener: ((String, JSONObject) -> Unit)?) {
+        callSignalListener = listener
+    }
+
+    fun roomPeers(roomId: String): List<LocalRoomPeer> =
+        peers.entries.toList()
+            .filter { store.isPeerInRoom(it.key, roomId) }
+            .map { LocalRoomPeer(it.key, it.value.name, it.value.host, it.value.port) }
+
+    fun sendCallSignal(roomId: String, targetNodeId: String, event: String, payload: JSONObject, senderName: String) {
+        if (roomId.isBlank() || targetNodeId.isBlank() || event !in CALL_EVENTS) return
+        io.execute {
+            val signalId = java.util.UUID.randomUUID().toString()
+            seenCallSignals[signalId] = System.currentTimeMillis()
+            val localId = store.serverId()
+            val recipients = peers.entries.toList().filter { entry ->
+                store.isPeerInRoom(entry.key, roomId)
+            }
+            recipients.forEach { entry ->
+                val source = JSONObject()
+                    .put("op", "call-signal")
+                    .put("roomId", roomId)
+                    .put("nodeId", localId)
+                    .put("fromNodeId", localId)
+                    .put("fromName", senderName.take(80))
+                    .put("toNodeId", targetNodeId)
+                    .put("event", event)
+                    .put("payload", payload)
+                    .put("signalId", signalId)
+                    .put("ttl", 16)
+                for (token in store.inviteTokensForRoom(roomId)) {
+                    val response = runCatching { request(entry.value, JSONObject(source.toString()).put("token", token)) }.getOrNull()
+                    if (response?.optBoolean("ok") == true) break
+                }
+            }
+        }
+    }
+
     fun peers(): List<LanPeer> = peers.values.toList()
 
     /** Current listening port; remote reachability still depends on the network/NAT. */
@@ -153,6 +195,7 @@ internal class LocalNodeTransport(
                 main.post { onPeersChanged(peers()) }
                 store.joinRoom(roomId, roomName, token)
                 store.rememberPeerRoom(hello.getString("nodeId"), roomId)
+                main.post { onPeersChanged(peers()) }
                 sync(peer, roomId)
                 discoverRoomMesh(namedPeer, roomId)
                 syncAll()
@@ -408,6 +451,51 @@ internal class LocalNodeTransport(
                             JSONObject().put("ok", true).put("roomId", room.id).put("roomName", room.name)
                         }
                     }
+                    "call-signal" -> {
+                        val token = request.optString("token")
+                        val roomId = request.optString("roomId")
+                        val fromNodeId = request.optString("fromNodeId")
+                        val fromName = request.optString("fromName", fromNodeId).take(80)
+                        val toNodeId = request.optString("toNodeId")
+                        val event = request.optString("event")
+                        val signalId = request.optString("signalId")
+                        val ttl = request.optInt("ttl", -1)
+                        val payload = request.optJSONObject("payload") ?: JSONObject()
+                        val valid = store.roomForInvite(token) == roomId && store.room(roomId) != null &&
+                            fromNodeId.isNotBlank() && toNodeId.isNotBlank() && signalId.isNotBlank() &&
+                            event in CALL_EVENTS && ttl in 0..16
+                        if (!valid) {
+                            JSONObject().put("ok", false).put("error", "Недопустимый сигнал звонка.")
+                        } else {
+                            rememberPeerRoomIfKnown(fromNodeId, roomId, socket.inetAddress)
+                            val now = System.currentTimeMillis()
+                            seenCallSignals.entries.removeIf { now - it.value > 120_000L }
+                            val fresh = seenCallSignals.putIfAbsent(signalId, now) == null
+                            if (seenCallSignals.size > 4096) seenCallSignals.entries.removeIf { now - it.value > 30_000L }
+                            if (fresh) {
+                                if (toNodeId == store.serverId()) {
+                                    val localEvent = when (event) {
+                                        "call:invite" -> "call:incoming"
+                                        "call:accept" -> "call:accepted"
+                                        "call:reject" -> "call:rejected"
+                                        "call:end" -> "call:ended"
+                                        else -> event
+                                    }
+                                    val delivered = JSONObject(payload.toString())
+                                        .put("fromNodeId", fromNodeId)
+                                        .put("fromName", fromName)
+                                        .put("toNodeId", toNodeId)
+                                    if (localEvent == "call:incoming") delivered.put("caller", JSONObject().put("displayName", fromName))
+                                    main.post { callSignalListener?.invoke(localEvent, delivered) }
+                                }
+                                if (ttl > 0) {
+                                    val sourceAddress = socket.inetAddress
+                                    io.execute { relayCallSignal(roomId, fromNodeId, toNodeId, fromName, event, payload, signalId, ttl - 1, sourceAddress) }
+                                }
+                            }
+                            JSONObject().put("ok", true)
+                        }
+                    }
                     "file-manifest" -> {
                         val token = request.optString("token")
                         val roomId = request.optString("roomId")
@@ -645,6 +733,41 @@ internal class LocalNodeTransport(
         }
     }
 
+    private fun relayCallSignal(
+        roomId: String,
+        fromNodeId: String,
+        toNodeId: String,
+        fromName: String,
+        event: String,
+        payload: JSONObject,
+        signalId: String,
+        ttl: Int,
+        sourceAddress: InetAddress
+    ) {
+        peers.entries.toList().filter { entry ->
+            store.isPeerInRoom(entry.key, roomId) &&
+                !entry.value.host.address.contentEquals(sourceAddress.address)
+        }.forEach { entry ->
+            for (token in store.inviteTokensForRoom(roomId)) {
+                val response = runCatching {
+                    request(entry.value, JSONObject()
+                        .put("op", "call-signal")
+                        .put("token", token)
+                        .put("roomId", roomId)
+                        .put("nodeId", store.serverId())
+                        .put("fromNodeId", fromNodeId)
+                        .put("fromName", fromName)
+                        .put("toNodeId", toNodeId)
+                        .put("event", event)
+                        .put("payload", payload)
+                        .put("signalId", signalId)
+                        .put("ttl", ttl))
+                }.getOrNull()
+                if (response?.optBoolean("ok") == true) break
+            }
+        }
+    }
+
     private fun sendMessageToPeer(peer: LanPeer, message: LocalNodeMessage): Boolean {
         for (token in store.inviteTokensForRoom(message.roomId)) {
             val accepted = runCatching {
@@ -702,6 +825,7 @@ internal class LocalNodeTransport(
                 }.getOrNull()
                 if (candidate?.optBoolean("ok") == true) {
                     store.rememberPeerRoom(currentId, roomId)
+                    main.post { onPeersChanged(peers()) }
                     response = candidate
                     break
                 }
@@ -815,8 +939,9 @@ internal class LocalNodeTransport(
     private fun rememberPeerRoomIfKnown(peerId: String, roomId: String, sourceAddress: InetAddress) {
         if (peerId.isBlank() || peerId == store.serverId()) return
         val known = peers[peerId] ?: return
-        if (known.host.address.contentEquals(sourceAddress.address)) {
+        if (known.host.address.contentEquals(sourceAddress.address) && !store.isPeerInRoom(peerId, roomId)) {
             store.rememberPeerRoom(peerId, roomId)
+            main.post { onPeersChanged(peers()) }
         }
     }
 

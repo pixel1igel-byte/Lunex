@@ -571,7 +571,7 @@ private fun LunexApp() {
 }
 
 @Composable
-private fun CallVideoPreview(track: VideoTrack, manager: AndroidCallManager, mirror: Boolean) {
+internal fun CallVideoPreview(track: VideoTrack, manager: AndroidCallManager, mirror: Boolean) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val renderer = remember(manager) {
         SurfaceViewRenderer(context).apply {

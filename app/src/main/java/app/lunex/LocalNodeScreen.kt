@@ -3,6 +3,10 @@ package app.lunex
 import android.content.Context
 import android.content.ClipboardManager
 import android.content.ClipData
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Handler
+import android.os.Looper
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -12,12 +16,19 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -30,6 +41,9 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import org.webrtc.PeerConnection
+import org.webrtc.VideoTrack
 
 @Composable
 internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
@@ -53,8 +67,59 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
     var chatDraft by remember { mutableStateOf("") }
     var localMessages by remember { mutableStateOf(emptyList<LocalNodeMessage>()) }
     var roomFiles by remember { mutableStateOf(emptyList<LocalNodeFile>()) }
+    var roomPeers by remember { mutableStateOf(emptyList<LocalRoomPeer>()) }
+    var callState by remember { mutableStateOf("idle") }
+    var callMode by remember { mutableStateOf("audio") }
+    var micEnabled by remember { mutableStateOf(true) }
+    var cameraEnabled by remember { mutableStateOf(true) }
+    var incomingCall by remember { mutableStateOf<JSONObject?>(null) }
+    var localVideoTrack by remember { mutableStateOf<VideoTrack?>(null) }
+    var remoteVideoTrack by remember { mutableStateOf<VideoTrack?>(null) }
+    var pendingCallAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     val peers = nodeState.peers
     val transport = remember { LocalNodeRuntime.ensure(context) }
+    val callManager = remember(context, transport) {
+        AndroidCallManager(
+            context,
+            listOf(PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()),
+            onIncoming = { event -> Handler(Looper.getMainLooper()).post { incomingCall = event; callMode = event.optString("mode", "audio") } },
+            onState = { state -> Handler(Looper.getMainLooper()).post {
+                callState = if (state in setOf("ended", "rejected", "failed")) "idle" else state
+                if (state in setOf("connecting", "connected", "ended", "rejected", "failed", "idle")) incomingCall = null
+                if (state == "ended") status = "Собеседник завершил звонок."
+                if (state == "rejected") status = "Собеседник отклонил звонок."
+            } },
+            onLocalVideo = { track -> Handler(Looper.getMainLooper()).post { localVideoTrack = track } },
+            onRemoteVideo = { track -> Handler(Looper.getMainLooper()).post { remoteVideoTrack = track } },
+            onError = { message -> Handler(Looper.getMainLooper()).post { status = message } }
+        )
+    }
+    LaunchedEffect(selected?.id, loggedIn, activeName, callState) {
+        val room = selected
+        if (loggedIn && room != null) {
+            if (callState == "idle") callManager.bindLocal(transport, room.id, store.serverId(), activeName)
+        } else callManager.unbindLocal()
+    }
+    DisposableEffect(callManager) { onDispose { callManager.dispose() } }
+    LaunchedEffect(selected?.id, nodeState.peers) {
+        val room = selected
+        roomPeers = if (room == null) emptyList() else transport.roomPeers(room.id)
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+        val action = pendingCallAction
+        pendingCallAction = null
+        if (results.values.all { it }) action?.invoke() else status = "Для звонков разреши доступ к микрофону и камере."
+    }
+    fun withCallPermissions(action: () -> Unit) {
+        val needed = buildList {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) add(Manifest.permission.RECORD_AUDIO)
+            if (callMode == "video" && ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) add(Manifest.permission.CAMERA)
+        }
+        if (needed.isEmpty()) action() else {
+            pendingCallAction = action
+            permissionLauncher.launch(needed.toTypedArray())
+        }
+    }
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         val room = selected
         if (uri != null && room != null) {
@@ -182,6 +247,31 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                 } else {
                     Text("Нажми «Пригласить», чтобы создать ссылку для этой комнаты.", color = Color(0xFFAAA0BC), fontSize = 11.sp)
                 }
+                Text("Участники и звонки", color = Color.White, fontWeight = FontWeight.Bold)
+                if (roomPeers.isEmpty()) {
+                    Text("Пока нет подключённых участников этой комнаты.", color = Color(0xFFAAA0BC), fontSize = 11.sp)
+                } else {
+                    roomPeers.take(12).forEach { peer ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(peer.name, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                Text(peer.id, color = Color(0xFFAAA0BC), fontSize = 9.sp)
+                            }
+                            IconButton(onClick = {
+                                callMode = "audio"
+                                withCallPermissions { callManager.startOutgoing(room.id, peer.id, "audio") }
+                            }, modifier = Modifier.size(40.dp)) {
+                                Icon(Icons.Default.Call, contentDescription = "Голосовой звонок", tint = Color(0xFFB56BFF))
+                            }
+                            IconButton(onClick = {
+                                callMode = "video"
+                                withCallPermissions { callManager.startOutgoing(room.id, peer.id, "video") }
+                            }, modifier = Modifier.size(40.dp)) {
+                                Icon(Icons.Default.Videocam, contentDescription = "Видеозвонок", tint = Color(0xFFB56BFF))
+                            }
+                        }
+                    }
+                }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("Файлы комнаты", color = Color.White, fontWeight = FontWeight.Bold)
                     OutlinedButton(
@@ -235,5 +325,64 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
             TextButton(onClick = { loggedIn = false; isRegister = false; selected = null; invite = "" }) { Text("Выйти") }
         }
         if (shownStatus.isNotBlank()) Text(shownStatus, color = Color(0xFFFF8D9B), fontSize = 12.sp)
+    }
+    if (loggedIn && callState !in setOf("idle", "ended", "rejected", "failed")) {
+        val isIncoming = incomingCall != null
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text(if (isIncoming) "Входящий ${if (callMode == "video") "видеозвонок" else "звонок"}" else if (callMode == "video") "Видеозвонок" else "Голосовой звонок") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        incomingCall?.optJSONObject("caller")?.optString("displayName").orEmpty()
+                            .ifBlank { roomPeers.firstOrNull { it.id == callManager.currentPeerId() }?.name ?: "Собеседник" },
+                        color = Color(0xFFAAA0BC)
+                    )
+                    Text(when (callState) {
+                        "calling" -> "Вызов…"
+                        "incoming" -> "Входящий вызов"
+                        "connecting" -> "Подключаемся…"
+                        "connected" -> "Соединение установлено"
+                        else -> "Подготовка звонка…"
+                    })
+                    Text("Сигнализация идёт через узлы комнаты; участники комнаты могут видеть данные установления соединения. Связь зависит от NAT и доступности STUN/TURN.", color = Color(0xFFAAA0BC), fontSize = 10.sp)
+                    if (callMode == "video") {
+                        localVideoTrack?.let { Text("Твоё видео", fontWeight = FontWeight.SemiBold); CallVideoPreview(it, callManager, true) }
+                        remoteVideoTrack?.let { Text("Видео собеседника", fontWeight = FontWeight.SemiBold); CallVideoPreview(it, callManager, false) }
+                    }
+                }
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (isIncoming) {
+                        TextButton(onClick = {
+                            withCallPermissions {
+                                incomingCall = null
+                                callState = "connecting"
+                                callManager.acceptIncoming()
+                            }
+                        }) { Text("Принять") }
+                        TextButton(onClick = { callManager.rejectIncoming() }) { Text("Отклонить", color = Color(0xFFFF7188)) }
+                    } else {
+                        if (callState == "connected") {
+                            TextButton(onClick = { micEnabled = !micEnabled; callManager.setMicrophoneEnabled(micEnabled) }) {
+                                Icon(if (micEnabled) Icons.Default.Mic else Icons.Default.MicOff, null)
+                                Text("Микрофон")
+                            }
+                            if (callMode == "video") {
+                                TextButton(onClick = { cameraEnabled = !cameraEnabled; callManager.setCameraEnabled(cameraEnabled) }) {
+                                    Icon(if (cameraEnabled) Icons.Default.Videocam else Icons.Default.VideocamOff, null)
+                                    Text("Камера")
+                                }
+                            }
+                        }
+                        TextButton(onClick = { callManager.endCall() }) {
+                            Icon(Icons.Default.CallEnd, null, tint = Color(0xFFFF7188))
+                            Text("Завершить", color = Color(0xFFFF7188))
+                        }
+                    }
+                }
+            }
+        )
     }
 }
