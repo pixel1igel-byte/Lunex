@@ -13,6 +13,9 @@ import java.io.OutputStreamWriter
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.security.MessageDigest
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -224,6 +227,18 @@ internal class LocalNodeTransport(
                             JSONObject().put("ok", true).put("roomId", room.id).put("roomName", room.name)
                         }
                     }
+                    "prove-room" -> {
+                        val roomId = request.optString("roomId")
+                        val challenge = request.optString("challenge")
+                        val proof = hexToBytes(request.optString("proof"))
+                        val valid = roomId.isNotBlank() && store.room(roomId) != null &&
+                            challenge.length in 16..128 && proof != null &&
+                            store.inviteTokensForRoom(roomId).any { token ->
+                                MessageDigest.isEqual(roomProof(token, challenge), proof)
+                            }
+                        if (valid) rememberPeerRoomIfKnown(request.optString("nodeId"), roomId, socket.inetAddress)
+                        JSONObject().put("ok", valid)
+                    }
                     "peers" -> {
                         val roomId = request.optString("roomId")
                         val token = request.optString("token")
@@ -419,6 +434,10 @@ internal class LocalNodeTransport(
                     request(candidatePeer, JSONObject().put("op", "hello"))
                 }.getOrNull() ?: continue
                 if (!candidateHello.optBoolean("ok") || candidateHello.optString("nodeId") != expectedId) continue
+                val isRoomMember = roomTokens.any { token ->
+                    runCatching { proveRoomMembership(candidatePeer, roomId, token) }.getOrDefault(false)
+                }
+                if (!isRoomMember) continue
                 val verified = candidatePeer.copy(name = candidateHello.optString("name").ifBlank { candidatePeer.name })
                 peers[expectedId] = verified
                 store.rememberPeer(expectedId, verified.serviceName, endpointOf(verified))
@@ -483,6 +502,31 @@ internal class LocalNodeTransport(
      * already verified at the same source address. Direct Internet peers that
      * cannot be dialed back still sync through their own periodic pulls.
      */
+    private fun proveRoomMembership(peer: LanPeer, roomId: String, token: String): Boolean {
+        val challenge = java.util.UUID.randomUUID().toString()
+        val proof = roomProof(token, challenge).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val response = request(peer, JSONObject()
+            .put("op", "prove-room")
+            .put("roomId", roomId)
+            .put("challenge", challenge)
+            .put("proof", proof)
+            .put("nodeId", store.serverId()))
+        return response.optBoolean("ok")
+    }
+
+    private fun roomProof(token: String, challenge: String): ByteArray {
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(token.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+        return mac.doFinal(challenge.toByteArray(Charsets.UTF_8))
+    }
+
+    private fun hexToBytes(value: String): ByteArray? {
+        if (value.length != 64 || !value.matches(Regex("[0-9a-fA-F]{64}"))) return null
+        return ByteArray(32) { index ->
+            value.substring(index * 2, index * 2 + 2).toInt(16).toByte()
+        }
+    }
+
     private fun rememberPeerRoomIfKnown(peerId: String, roomId: String, sourceAddress: InetAddress) {
         if (peerId.isBlank() || peerId == store.serverId()) return
         val known = peers[peerId] ?: return
