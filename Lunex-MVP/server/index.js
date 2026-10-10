@@ -178,6 +178,7 @@ function publicCommunity(community, userId) {
     id: community.id, name: community.name, description: community.description || '',
     ownerId: community.ownerId || null, createdAt: community.createdAt || null,
     memberCount: community.ownerId ? (community.members || []).length : null,
+    categories: (community.categories || []).map(category => ({ id: category.id, name: category.name })),
     roles: (community.roles || []).map(role => ({ id: role.id, name: role.name, permissions: role.id === 'owner' ? [] : role.permissions })),
     isMember: !community.ownerId || Boolean(member),
     myRole: member?.roleId || (!community.ownerId ? 'member' : null),
@@ -354,8 +355,8 @@ app.post('/api/communities', authHttp, (req, res) => {
       { id: 'member', name: 'Участник', permissions: ['view','send'] }
     ],
     members: [{ userId: req.user.id, roleId: 'owner', joinedAt: new Date().toISOString() }],
-    invites: [],
-    channels: [{ id: `${id}-general`, name: 'общение', type: 'text', private: false, allowedRoleIds: [] }]
+    invites: [], categories: [],
+    channels: [{ id: `${id}-general`, name: 'общение', type: 'text', private: false, allowedRoleIds: [], categoryId: null }]
   };
   db.communities.push(community); saveDb(); io.emit('communities:changed', { communityId: community.id }); res.status(201).json(publicCommunity(community, req.user.id));
 });
@@ -367,8 +368,39 @@ app.post('/api/communities/:id/channels', authHttp, (req, res) => {
   const type = req.body?.type === 'voice' ? 'voice' : 'text';
   const isPrivate = req.body?.private === true;
   if (!name) return res.status(400).json({ error: 'Введите название канала.' });
-  const channel = { id: `${community.id}-${randomBytes(6).toString('hex')}`, name, type, private: isPrivate, allowedRoleIds: isPrivate ? ['owner','admin'] : [] };
+  const categoryId = typeof req.body?.categoryId === 'string' && (community.categories || []).some(category => category.id === req.body.categoryId) ? req.body.categoryId : null;
+  const channel = { id: `${community.id}-${randomBytes(6).toString('hex')}`, name, type, private: isPrivate, allowedRoleIds: isPrivate ? ['owner','admin'] : [], categoryId };
   community.channels.push(channel); saveDb(); io.emit('communities:changed', { communityId: community.id }); res.status(201).json(channel);
+});
+app.post('/api/communities/:id/categories', authHttp, (req, res) => {
+  const community = db.communities.find(item => item.id === req.params.id);
+  if (!community) return res.status(404).json({ error: 'Сообщество не найдено.' });
+  if (!hasPermission(community, req.user.id, 'manage_channels')) return res.status(403).json({ error: 'Недостаточно прав для создания категорий.' });
+  const name = String(req.body?.name || '').trim().slice(0, 48);
+  if (!name) return res.status(400).json({ error: 'Введите название категории.' });
+  community.categories ||= [];
+  if (community.categories.length >= 50) return res.status(409).json({ error: 'В сообществе уже максимум 50 категорий.' });
+  const category = { id: `${community.id}-category-${randomBytes(5).toString('hex')}`, name };
+  community.categories.push(category); saveDb(); io.emit('communities:changed', { communityId: community.id }); res.status(201).json(category);
+});
+app.patch('/api/communities/:id/categories/:categoryId', authHttp, (req, res) => {
+  const community = db.communities.find(item => item.id === req.params.id);
+  if (!community) return res.status(404).json({ error: 'Сообщество не найдено.' });
+  if (!hasPermission(community, req.user.id, 'manage_channels')) return res.status(403).json({ error: 'Недостаточно прав для изменения категорий.' });
+  const category = (community.categories || []).find(item => item.id === req.params.categoryId);
+  if (!category) return res.status(404).json({ error: 'Категория не найдена.' });
+  const name = String(req.body?.name || '').trim().slice(0, 48);
+  if (!name) return res.status(400).json({ error: 'Введите название категории.' });
+  category.name = name; saveDb(); io.emit('communities:changed', { communityId: community.id }); res.json(category);
+});
+app.delete('/api/communities/:id/categories/:categoryId', authHttp, (req, res) => {
+  const community = db.communities.find(item => item.id === req.params.id);
+  if (!community) return res.status(404).json({ error: 'Сообщество не найдено.' });
+  if (!hasPermission(community, req.user.id, 'manage_channels')) return res.status(403).json({ error: 'Недостаточно прав для удаления категорий.' });
+  if (!(community.categories || []).some(item => item.id === req.params.categoryId)) return res.status(404).json({ error: 'Категория не найдена.' });
+  community.categories = community.categories.filter(item => item.id !== req.params.categoryId);
+  for (const channel of community.channels || []) if (channel.categoryId === req.params.categoryId) channel.categoryId = null;
+  saveDb(); io.emit('communities:changed', { communityId: community.id }); res.json({ ok: true });
 });
 app.patch('/api/communities/:id/channels/:channelId', authHttp, (req, res) => {
   const community = db.communities.find(item => item.id === req.params.id);
@@ -377,6 +409,8 @@ app.patch('/api/communities/:id/channels/:channelId', authHttp, (req, res) => {
   const channel = community.channels.find(item => item.id === req.params.channelId);
   if (!channel) return res.status(404).json({ error: 'Канал не найден.' });
   if (typeof req.body?.name === 'string' && req.body.name.trim()) channel.name = req.body.name.trim().slice(0, 48);
+  if (req.body?.categoryId === null) channel.categoryId = null;
+  else if (typeof req.body?.categoryId === 'string' && (community.categories || []).some(category => category.id === req.body.categoryId)) channel.categoryId = req.body.categoryId;
   if (typeof req.body?.private === 'boolean') {
     channel.private = req.body.private;
     channel.allowedRoleIds = channel.private ? ['owner','admin'] : [];
