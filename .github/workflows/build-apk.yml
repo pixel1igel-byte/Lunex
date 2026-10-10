@@ -1,0 +1,62 @@
+name: Build Lunex APK
+
+on:
+  push:
+    paths:
+      - '**.zip'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Locate and extract Android project archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(find . -maxdepth 2 -type f -iname 'Lunex-Android-1.0.0-GitHub-Build.zip' -print -quit)"
+          if [ -z "$archive" ]; then
+            archive="$(find . -maxdepth 2 -type f -iname '*.zip' -print -quit)"
+          fi
+          if [ -z "$archive" ]; then
+            echo "Upload the Lunex Android ZIP archive to the repository first."
+            exit 1
+          fi
+          unzip -q "$archive" -d extracted
+          project="$(find extracted -type f -name settings.gradle.kts -printf '%h\n' | head -n 1)"
+          if [ -z "$project" ]; then
+            echo "Could not find settings.gradle.kts in the uploaded archive."
+            find extracted -maxdepth 3 -type f | head -100
+            exit 1
+          fi
+          echo "LUNEX_PROJECT_DIR=$project" >> "$GITHUB_ENV"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK
+        working-directory: ${{ env.LUNEX_PROJECT_DIR }}
+        run: gradle --no-daemon assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lunex-debug-apk
+          path: ${{ env.LUNEX_PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
