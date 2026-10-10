@@ -126,7 +126,10 @@ private fun LunexApp() {
     var notice by remember { mutableStateOf("") }
     var showServer by remember { mutableStateOf(false) }
     var showNewDm by remember { mutableStateOf(false) }
-    var socket by remember { mutableStateOf<Socket?>(null) }\n    val activeChannelRef = remember { java.util.concurrent.atomic.AtomicReference("") }\n    val activeDmRef = remember { java.util.concurrent.atomic.AtomicReference("") }\n    LaunchedEffect(activeChannel, activeDm) { activeChannelRef.set(activeChannel); activeDmRef.set(activeDm?.id.orEmpty()) }
+    var socket by remember { mutableStateOf<Socket?>(null) }
+    val activeChannelRef = remember { java.util.concurrent.atomic.AtomicReference("") }
+    val activeDmRef = remember { java.util.concurrent.atomic.AtomicReference("") }
+    LaunchedEffect(activeChannel, activeDm) { activeChannelRef.set(activeChannel); activeDmRef.set(activeDm?.id.orEmpty()) }
     var communityDialog by remember { mutableStateOf(false) }
     var communityName by remember { mutableStateOf("") }
 
