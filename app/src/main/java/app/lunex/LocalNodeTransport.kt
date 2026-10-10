@@ -238,10 +238,98 @@ internal class LocalNodeTransport(
                         runCatching { syncInvites(peer, room.id) }
                         runCatching { pushHistoryToPeer(peer, room.id) }
                         runCatching { sync(peer, room.id) }
+                        runCatching { pushFilesToPeer(peer, room.id) }
                     }
                 }
             }
         }
+    }
+
+    private fun roomFilesDirectory(roomId: String): File {
+        val canonicalId = java.util.UUID.fromString(roomId).toString()
+        require(canonicalId.equals(roomId, ignoreCase = true)) { "Некорректный ID комнаты." }
+        return File(app.filesDir, "lunex-files/$canonicalId")
+    }
+
+    private fun pushFilesToPeer(peer: LanPeer, roomId: String) {
+        store.files(roomId).forEach { file -> runCatching { sendFileToPeer(peer, file) } }
+    }
+
+    private fun sendFileToPeer(peer: LanPeer, file: LocalNodeFile): Boolean {
+        val localFile = File(file.localPath)
+        if (!file.complete || !localFile.isFile || localFile.length() != file.sizeBytes) return false
+        var selectedToken: String? = null
+        for (token in store.inviteTokensForRoom(file.roomId)) {
+            val manifest = JSONObject()
+                .put("op", "file-manifest")
+                .put("token", token)
+                .put("nodeId", store.serverId())
+                .put("fileId", file.id)
+                .put("roomId", file.roomId)
+                .put("senderNodeId", file.senderNodeId)
+                .put("senderName", file.senderName)
+                .put("fileName", file.fileName)
+                .put("mimeType", file.mimeType)
+                .put("sizeBytes", file.sizeBytes)
+                .put("sha256", file.sha256)
+                .put("chunkCount", file.chunkCount)
+            val response = runCatching { request(peer, manifest) }.getOrNull() ?: continue
+            if (response.optBoolean("ok")) {
+                if (response.optBoolean("already")) return true
+                selectedToken = token
+                break
+            }
+        }
+        val token = selectedToken ?: return false
+        FileInputStream(localFile).use { input ->
+            for (index in 0 until file.chunkCount) {
+                val expected = if (index < file.chunkCount - 1) FILE_CHUNK_BYTES
+                    else (file.sizeBytes - index.toLong() * FILE_CHUNK_BYTES).toInt()
+                val chunk = ByteArray(expected)
+                var offset = 0
+                while (offset < expected) {
+                    val read = input.read(chunk, offset, expected - offset)
+                    if (read < 0) throw IllegalStateException("Локальный файл изменился во время передачи.")
+                    offset += read
+                }
+                val response = request(peer, JSONObject()
+                    .put("op", "file-chunk")
+                    .put("token", token)
+                    .put("nodeId", store.serverId())
+                    .put("roomId", file.roomId)
+                    .put("fileId", file.id)
+                    .put("index", index)
+                    .put("data", Base64.getEncoder().encodeToString(chunk)))
+                if (!response.optBoolean("ok")) throw IllegalStateException("Узел отклонил часть файла.")
+            }
+        }
+        val completed = request(peer, JSONObject()
+            .put("op", "file-complete")
+            .put("token", token)
+            .put("nodeId", store.serverId())
+            .put("roomId", file.roomId)
+            .put("fileId", file.id))
+        return completed.optBoolean("ok")
+    }
+
+    private fun relayFileToPeers(file: LocalNodeFile, sourceAddress: InetAddress?) {
+        peers.entries.toList().filter { entry ->
+            store.isPeerInRoom(entry.key, file.roomId) &&
+                (sourceAddress == null || !entry.value.host.address.contentEquals(sourceAddress.address))
+        }.forEach { entry -> runCatching { sendFileToPeer(entry.value, file) } }
+    }
+
+    private fun sha256File(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        FileInputStream(file).use { input ->
+            val buffer = ByteArray(16 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
     private fun sync(peer: LanPeer, roomId: String) {
