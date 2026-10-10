@@ -169,16 +169,21 @@ internal class LocalNodeTransport(
             }
         }
         val array = response?.optJSONArray("messages") ?: return
+        val newlyInserted = mutableListOf<LocalNodeMessage>()
         for (i in 0 until array.length()) {
             val message = LocalNodeMessage.fromJson(array.getJSONObject(i))
-            if (message.roomId != roomId) continue
+            if (message.roomId != roomId || message.body.length > 4000 ||
+                message.id.length > 128 || message.senderName.length > 80) continue
             // Sync is also a propagation path: a returning/offline node can bring
             // older messages back into the mesh. Relay only newly inserted IDs.
             if (store.addMessage(message)) {
                 main.post { onMessage(message) }
-                io.execute { relayToPeers(message, peer.host) }
+                newlyInserted += message
             }
         }
+        // Relay sequentially in this worker instead of scheduling one thread-pool
+        // task per historical message when a large history is synchronized.
+        newlyInserted.forEach { relayToPeers(it, peer.host) }
     }
 
     private fun handle(client: Socket) {
@@ -215,8 +220,9 @@ internal class LocalNodeTransport(
                         val token = request.optString("token")
                         val roomId = request.optString("roomId")
                         val message = LocalNodeMessage.fromJson(request.getJSONObject("message"))
-                        if (store.roomForInvite(token) != roomId || message.roomId != roomId) {
-                            JSONObject().put("ok", false).put("error", "Нет доступа к комнате")
+                        if (store.roomForInvite(token) != roomId || message.roomId != roomId ||
+                            message.body.length > 4000 || message.id.length > 128 || message.senderName.length > 80) {
+                            JSONObject().put("ok", false).put("error", "Нет доступа к комнате или сообщение некорректно")
                         } else {
                             // Deduplication is the loop guard: a node relays a message only
                             // the first time it stores that message ID.
