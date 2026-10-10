@@ -31,7 +31,10 @@ internal object LocalNodeRuntime {
 
     @Synchronized
     fun ensure(context: Context): LocalNodeTransport {
-        transportInstance?.let { return it }
+        transportInstance?.let {
+            it.start()
+            return it
+        }
         val store = store(context)
         val transport = LocalNodeTransport(
             context.applicationContext,
@@ -43,6 +46,12 @@ internal object LocalNodeRuntime {
         transportInstance = transport
         transport.start()
         return transport
+    }
+
+    @Synchronized
+    fun pause() {
+        transportInstance?.stop()
+        mutableState.update { it.copy(peers = emptyList(), status = "Узел приостановлен: приложение неактивно") }
     }
 
     @Synchronized
