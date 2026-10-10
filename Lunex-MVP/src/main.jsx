@@ -332,10 +332,10 @@ function App() {
   return <div className="app-shell">
     <aside className={`rail ${mobileNav ? 'show' : ''}`}>
       <div className="rail-logo"><MoonStar size={24}/></div>
-      <button className={`rail-item ${tab==='chats'?'active':''}`} title="Чаты" onClick={()=>{setTab('chats');setMobileNav(false)}}><MessageCircle/></button>
-      <button className={`rail-item ${tab==='communities'?'active':''}`} title="Сообщества" onClick={()=>{setTab('communities');setMobileNav(false)}}><Users/></button>
-      <button className={`rail-item ${tab==='calls'?'active':''}`} title="Звонки" onClick={()=>{setTab('calls');setMobileNav(false)}}><Phone/></button>
-      <button className={`rail-item ${tab==='notifications'?'active':''}`} title="Уведомления" onClick={()=>{setTab('notifications');setMobileNav(false)}}><Bell/>{notifications.some(n=>!n.read)&&<span className="rail-notification-dot"/>}</button>
+      <button className={`rail-item ${tab==='chats'?'active':''}`} title="Чаты" onClick={()=>{setTab('chats');setDm(null);setMobileNav(false)}}><MessageCircle/></button>
+      <button className={`rail-item ${tab==='communities'?'active':''}`} title="Сообщества" onClick={()=>{setTab('communities');setDm(null);setMobileNav(false)}}><Users/></button>
+      <button className={`rail-item ${tab==='calls'?'active':''}`} title="Звонки" onClick={()=>{setTab('calls');setDm(null);setMobileNav(false)}}><Phone/></button>
+      <button className={`rail-item ${tab==='notifications'?'active':''}`} title="Уведомления" onClick={()=>{setTab('notifications');setDm(null);setMobileNav(false)}}><Bell/>{notifications.some(n=>!n.read)&&<span className="rail-notification-dot"/>}</button>
       <div className="rail-spacer"/>
       <button className="rail-item" title="Настройки" onClick={()=>{setSettingsOpen(true);setMobileNav(false)}}><Settings2/></button>
       <div className="rail-avatar">{user.slice(0,1).toUpperCase()}</div>
@@ -344,7 +344,7 @@ function App() {
     <aside className={`sidebar ${mobileNav ? 'show' : ''}`}>
       <header className="sidebar-header"><div><div className="brand">LUNEX <span className={`online-dot ${socketConnected?'connected':'offline'}`} title={socketConnected?'Соединение с сервером активно':'Нет соединения с сервером'}/></div><div className="muted tiny">Твоё цифровое пространство</div></div><button className="icon-btn" onClick={()=>setNewCommunity(true)} title="Создать сообщество"><Plus/></button></header>
       <div className="search-box"><Search size={16}/><input value={chatSearch} onChange={e=>setChatSearch(e.target.value)} placeholder="Поиск чатов и каналов"/></div>
-      <nav className="mobile-tabs" aria-label="Навигация"><button className={tab==='chats'?'active':''} onClick={()=>{setTab('chats');setMobileNav(false)}}><MessageCircle size={16}/>Чаты</button><button className={tab==='communities'?'active':''} onClick={()=>{setTab('communities');setMobileNav(false)}}><Users size={16}/>Сообщества</button><button className={tab==='calls'?'active':''} onClick={()=>{setTab('calls');setMobileNav(false)}}><Phone size={16}/>Звонки</button></nav>
+      <nav className="mobile-tabs" aria-label="Навигация"><button className={tab==='chats'?'active':''} onClick={()=>{setTab('chats');setDm(null);setMobileNav(false)}}><MessageCircle size={16}/>Чаты</button><button className={tab==='communities'?'active':''} onClick={()=>{setTab('communities');setDm(null);setMobileNav(false)}}><Users size={16}/>Сообщества</button><button className={tab==='calls'?'active':''} onClick={()=>{setTab('calls');setDm(null);setMobileNav(false)}}><Phone size={16}/>Звонки</button></nav>
       {tab === 'chats' && <>
         <div className="section-heading"><span>ЛИЧНЫЕ ЧАТЫ</span><button className="tiny-icon" title="Новый личный чат" onClick={()=>setNewDm(true)}><Plus size={15}/></button></div>
         {visibleDms.map(c=><button key={c.id} className={`dm-row ${dm?.id===c.id?'selected':''}`} onClick={()=>{setDm(c);setActiveChannel('');setMobileNav(false)}}><div className="avatar">{(c.other?.displayName || '?').slice(0,1).toUpperCase()}</div><div className="row-main"><strong>{c.other?.displayName || 'Пользователь'}</strong><span>{c.lastMessage || `@${c.other?.username || ''}`}</span></div><small>{c.time ? new Date(c.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : ''}</small></button>)}
