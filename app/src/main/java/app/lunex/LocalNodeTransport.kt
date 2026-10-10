@@ -168,6 +168,7 @@ internal class LocalNodeTransport(
         val array = response?.optJSONArray("messages") ?: return
         for (i in 0 until array.length()) {
             val message = LocalNodeMessage.fromJson(array.getJSONObject(i))
+            if (message.roomId != roomId) continue
             // Sync is also a propagation path: a returning/offline node can bring
             // older messages back into the mesh. Relay only newly inserted IDs.
             if (store.addMessage(message)) {
@@ -343,8 +344,9 @@ internal class LocalNodeTransport(
                             val hello = runCatching { request(peer, JSONObject().put("op", "hello")) }.getOrNull()
                             if (hello?.optBoolean("ok") == true && hello.optString("nodeId") != store.serverId()) {
                                 val peerId = hello.optString("nodeId")
-                                peers[peerId] = peer.copy(name = hello.optString("name").ifBlank { peer.name })
-                                store.rememberPeer(peerId, peer.name, endpointOf(peer))
+                                val verifiedPeer = peer.copy(name = hello.optString("name").ifBlank { peer.name })
+                                peers[peerId] = verifiedPeer
+                                store.rememberPeer(peerId, verifiedPeer.name, endpointOf(verifiedPeer))
                                 main.post { onPeersChanged(peers()) }
                                 syncAll()
                             }
