@@ -197,8 +197,66 @@ io.use((socket, next) => {
 function socketSessionIsValid(socket) {
   return db.sessions.some(s => s.tokenHash === socket.data.sessionTokenHash && s.expiresAt > Date.now());
 }
+const activeCalls = new Map();
+function callPayloadIsValid(payload) {
+  return payload && typeof payload.callId === 'string' && payload.callId.length <= 80 &&
+    typeof payload.conversationId === 'string' && payload.conversationId.length <= 64;
+}
+function callForUser(callId, userId) {
+  const call = activeCalls.get(callId);
+  return call && call.userIds.includes(userId) ? call : null;
+}
+
 io.on('connection', socket => {
   socket.join(`user:${socket.data.user.id}`);
+  socket.on('call:invite', payload => {
+    if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    if (!callPayloadIsValid(payload) || !['audio', 'video'].includes(payload.mode)) return;
+    const conversation = db.dms.find(d => d.id === payload.conversationId && d.userIds.includes(socket.data.user.id));
+    const targetId = String(payload.toUserId || '');
+    if (!conversation || !conversation.userIds.includes(targetId) || targetId === socket.data.user.id) return;
+    if (activeCalls.has(payload.callId)) return;
+    const call = { callId: payload.callId, conversationId: conversation.id, userIds: [...conversation.userIds], callerId: socket.data.user.id, mode: payload.mode, createdAt: Date.now() };
+    activeCalls.set(call.callId, call);
+    io.to(`user:${targetId}`).emit('call:incoming', { callId: call.callId, conversationId: call.conversationId, caller: publicUser(socket.data.user), mode: call.mode, offer: payload.offer });
+  });
+  socket.on('call:accept', payload => {
+    if (!socketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
+    const call = callForUser(payload.callId, socket.data.user.id);
+    if (!call || call.conversationId !== payload.conversationId || call.callerId === socket.data.user.id) return;
+    io.to(`user:${call.callerId}`).emit('call:accepted', { callId: call.callId, conversationId: call.conversationId, answer: payload.answer });
+  });
+  socket.on('call:signal', payload => {
+    if (!socketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
+    const call = callForUser(payload.callId, socket.data.user.id);
+    if (!call || call.conversationId !== payload.conversationId || !payload.signal || typeof payload.signal !== 'object') return;
+    const targetId = call.userIds.find(id => id !== socket.data.user.id);
+    io.to(`user:${targetId}`).emit('call:signal', { callId: call.callId, conversationId: call.conversationId, signal: payload.signal });
+  });
+  socket.on('call:reject', payload => {
+    if (!socketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
+    const call = callForUser(payload.callId, socket.data.user.id);
+    if (!call || call.conversationId !== payload.conversationId) return;
+    const targetId = call.userIds.find(id => id !== socket.data.user.id);
+    activeCalls.delete(call.callId);
+    io.to(`user:${targetId}`).emit('call:rejected', { callId: call.callId, conversationId: call.conversationId });
+  });
+  socket.on('call:end', payload => {
+    if (!socketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
+    const call = callForUser(payload.callId, socket.data.user.id);
+    if (!call || call.conversationId !== payload.conversationId) return;
+    const targetId = call.userIds.find(id => id !== socket.data.user.id);
+    activeCalls.delete(call.callId);
+    io.to(`user:${targetId}`).emit('call:ended', { callId: call.callId, conversationId: call.conversationId });
+  });
+  socket.on('disconnect', () => {
+    for (const [callId, call] of activeCalls) {
+      if (!call.userIds.includes(socket.data.user.id)) continue;
+      activeCalls.delete(callId);
+      const targetId = call.userIds.find(id => id !== socket.data.user.id);
+      io.to(`user:${targetId}`).emit('call:ended', { callId, conversationId: call.conversationId });
+    }
+  });
   const messageBurst = createRateLimiter({ limit: 20, windowMs: 10_000 });
   const messageSustained = createRateLimiter({ limit: 120, windowMs: 60_000 });
   socket.on('channel:join', channelId => {
