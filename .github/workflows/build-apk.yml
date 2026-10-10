@@ -1,4 +1,5 @@
 name: Build Lunex APK
+# Build the Android client with live REST and Socket.IO integration.
 on:
   workflow_dispatch:
   push:
