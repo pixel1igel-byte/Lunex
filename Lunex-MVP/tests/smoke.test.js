@@ -204,3 +204,99 @@ test('live server relays authenticated WebRTC signaling only to direct-chat part
   a.emit('call:invite', { callId: 'forged-call', conversationId: dm.id, toUserId: mallory.user.id, mode: 'audio', offer: { type: 'offer', sdp: 'forged' } });
   await assert.rejects(forgedPromise, /Timed out waiting/);
 });
+
+
+test('community membership, invite limits, roles and private channel permissions are enforced by the live server', { timeout: 30000 }, async t => {
+  const { spawn } = await import('node:child_process');
+  const net = await import('node:net');
+  const { io: connectSocket } = await import('socket.io-client');
+  const os = await import('node:os');
+  const { once } = await import('node:events');
+  const fsPromises = await import('node:fs/promises');
+  const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'lunex-community-'));
+  const probe = net.createServer();
+  probe.listen(0, '127.0.0.1');
+  await once(probe, 'listening');
+  const port = probe.address().port;
+  await new Promise(resolve => probe.close(resolve));
+  const child = spawn(process.execPath, ['server/index.js'], { cwd: root, env: { ...process.env, PORT: String(port), LUNEX_DATA_FILE: path.join(tempDir, 'db.json'), LUNEX_ALLOWED_ORIGINS: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let logs = '';
+  child.stdout.on('data', chunk => { logs += chunk.toString(); });
+  child.stderr.on('data', chunk => { logs += chunk.toString(); });
+  const base = `http://127.0.0.1:${port}`;
+  const sockets = [];
+  async function waitServer() {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      try { if ((await fetch(base + '/api/health')).ok) return; } catch {}
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('server did not start: ' + logs);
+  }
+  async function register(username) {
+    const response = await fetch(base + '/api/auth/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, displayName: username, password: 'Lunex-test-password-2026' }) });
+    const body = await response.json();
+    assert.equal(response.status, 201, JSON.stringify(body));
+    return body;
+  }
+  async function api(token, endpoint, method = 'GET', body) {
+    const response = await fetch(base + endpoint, { method, headers: { authorization: 'Bearer ' + token, ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return { response, data: await response.json().catch(() => ({})) };
+  }
+  function connect(token) {
+    const socket = connectSocket(base, { auth: { token }, reconnection: false, timeout: 4000 });
+    sockets.push(socket);
+    return new Promise((resolve, reject) => { socket.once('connect', () => resolve(socket)); socket.once('connect_error', reject); });
+  }
+  t.after(async () => {
+    for (const socket of sockets) socket.disconnect();
+    child.kill('SIGTERM');
+    if (child.exitCode === null) await Promise.race([once(child, 'exit'), new Promise(resolve => setTimeout(resolve, 1500))]);
+    await fsPromises.rm(tempDir, { recursive: true, force: true });
+  });
+  await waitServer();
+  const owner = await register('community_owner');
+  const member = await register('community_member');
+  const outsider = await register('community_outsider');
+  const created = await api(owner.token, '/api/communities', 'POST', { name: 'Private Test Community', description: 'Integration test' });
+  assert.equal(created.response.status, 201, JSON.stringify(created.data));
+  const community = created.data;
+  assert.equal(community.myRole, 'owner');
+  assert.equal(community.channels.length, 1);
+  assert.equal('invites' in community, false);
+  const outsiderBootstrap = await api(outsider.token, '/api/bootstrap');
+  assert.equal(outsiderBootstrap.response.status, 200);
+  assert.equal(outsiderBootstrap.data.communities.some(item => item.id === community.id), false);
+  const inviteResult = await api(owner.token, `/api/communities/${community.id}/invites`, 'POST', { maxUses: 1 });
+  assert.equal(inviteResult.response.status, 201, JSON.stringify(inviteResult.data));
+  const joined = await api(member.token, `/api/invites/${inviteResult.data.code}/join`, 'POST', {});
+  assert.equal(joined.response.status, 200, JSON.stringify(joined.data));
+  assert.equal(joined.data.community.myRole, 'member');
+  const exhausted = await api(outsider.token, `/api/invites/${inviteResult.data.code}/join`, 'POST', {});
+  assert.equal(exhausted.response.status, 410);
+  const channelCreate = await api(owner.token, `/api/communities/${community.id}/channels`, 'POST', { name: 'staff-only', private: true });
+  assert.equal(channelCreate.response.status, 201, JSON.stringify(channelCreate.data));
+  const privateChannel = channelCreate.data;
+  const deniedHistory = await api(member.token, `/api/messages/${privateChannel.id}`);
+  assert.equal(deniedHistory.response.status, 403);
+  const forbiddenChannelCreate = await api(member.token, `/api/communities/${community.id}/channels`, 'POST', { name: 'unauthorized' });
+  assert.equal(forbiddenChannelCreate.response.status, 403);
+  const deniedMembers = await api(outsider.token, `/api/communities/${community.id}/members`);
+  assert.equal(deniedMembers.response.status, 403);
+  const memberSocket = await connect(member.token);
+  memberSocket.emit('channel:join', privateChannel.id);
+  memberSocket.emit('message:send', { channelId: privateChannel.id, text: 'should not be stored' });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const beforePromotion = await api(owner.token, `/api/messages/${privateChannel.id}`);
+  assert.equal(beforePromotion.response.status, 200);
+  assert.equal(beforePromotion.data.length, 0);
+  const promoted = await api(owner.token, `/api/communities/${community.id}/members/${member.user.id}`, 'PATCH', { roleId: 'admin' });
+  assert.equal(promoted.response.status, 200, JSON.stringify(promoted.data));
+  assert.equal(promoted.data.roleId, 'admin');
+  const nowAllowed = await api(member.token, `/api/messages/${privateChannel.id}`);
+  assert.equal(nowAllowed.response.status, 200);
+  const memberAdminChannel = await api(member.token, `/api/communities/${community.id}/channels`, 'POST', { name: 'admin-created' });
+  assert.equal(memberAdminChannel.response.status, 201, JSON.stringify(memberAdminChannel.data));
+  const cannotPromotePeer = await api(member.token, `/api/communities/${community.id}/members/${owner.user.id}`, 'PATCH', { roleId: 'admin' });
+  assert.equal(cannotPromotePeer.response.status, 403);
+});
