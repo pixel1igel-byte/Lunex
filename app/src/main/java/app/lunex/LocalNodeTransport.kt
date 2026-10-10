@@ -71,8 +71,29 @@ internal class LocalNodeTransport(
 
     fun peers(): List<LanPeer> = peers.values.toList()
 
-    /** Current port; internet reachability may require router port forwarding. */
+    /** Current listening port; remote reachability still depends on the network/NAT. */
     fun listeningPort(): Int = port
+
+    /** Reachable addresses on this device's active network interfaces. */
+    fun localEndpoints(): List<String> {
+        val result = mutableListOf<String>()
+        val interfaces = runCatching { java.net.NetworkInterface.getNetworkInterfaces() }.getOrNull()
+            ?: return emptyList()
+        while (interfaces.hasMoreElements()) {
+            val networkInterface = interfaces.nextElement()
+            if (runCatching { !networkInterface.isUp || networkInterface.isLoopback }.getOrDefault(true)) continue
+            val addresses = networkInterface.inetAddresses
+            while (addresses.hasMoreElements()) {
+                val address = addresses.nextElement()
+                if (address.isLoopbackAddress || address.isLinkLocalAddress) continue
+                val host = if (address is java.net.Inet6Address) {
+                    "[" + address.hostAddress.substringBefore('%') + "]"
+                } else address.hostAddress
+                result += host + ":" + listeningPort()
+            }
+        }
+        return result.distinct()
+    }
 
     /**
      * Add a peer by reachable host/IP and TCP port. This supports direct connections
