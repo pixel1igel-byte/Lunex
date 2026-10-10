@@ -16,6 +16,7 @@ jobs:
     env:
       CI: 'true'
       LUNEX_DATA_FILE: /tmp/lunex-android-e2e.json
+      LUNEX_ALLOWED_ORIGINS: http://127.0.0.1:5173,http://10.0.2.2:3001
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
