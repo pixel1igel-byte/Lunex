@@ -167,7 +167,7 @@ test('live server relays authenticated WebRTC signaling only to direct-chat part
   const callConfig = await callConfigResponse.json();
   assert.equal(callConfig.turnConfigured, true);
   assert.equal(callConfig.iceServers.length, 2);
-  assert.match(callConfig.iceServers[1].username, /^\\d+:.*$/);
+  assert.match(callConfig.iceServers[1].username, /^\d+:.*$/);
   assert.ok(callConfig.iceServers[1].credential);
   const dmRes = await fetch(base + '/api/dms', { method: 'POST', headers: { authorization: `Bearer ${alice.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ username: 'call_bob' }) });
   assert.equal(dmRes.status, 200);
