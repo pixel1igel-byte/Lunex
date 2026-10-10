@@ -13,7 +13,7 @@ internal data class LocalNodeUiState(
 )
 
 /**
- * Process-wide node runtime shared by the foreground service and the Compose UI.
+ * Process-wide node runtime shared by the activity lifecycle and Compose UI.
  * The SQLite database is durable; this singleton only owns the live network socket.
  */
 internal object LocalNodeRuntime {
