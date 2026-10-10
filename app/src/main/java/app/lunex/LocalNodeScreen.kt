@@ -60,6 +60,7 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
     Column(Modifier.fillMaxSize().background(Color(0xFF0D0B16)).padding(18.dp)) {
         Text("LUNEX · LOCAL NODE", color = Color(0xFFB56BFF), fontSize = 22.sp, fontWeight = FontWeight.Black)
         Text("ID узла: " + store.serverId(), color = Color(0xFFAAA0BC), fontSize = 12.sp)
+        Text("Порт узла: " + transport.listeningPort(), color = Color(0xFFAAA0BC), fontSize = 12.sp)
         if (!loggedIn) {
             Spacer(Modifier.height(20.dp))
             Text(if (isRegister) "Создать аккаунт на телефоне" else "Войти в локальный аккаунт", color = Color.White, fontSize = 18.sp)
