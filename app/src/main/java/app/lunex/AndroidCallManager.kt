@@ -65,10 +65,22 @@ internal class AndroidCallManager(
 
     val eglContext get() = egl.eglBaseContext
 
+    companion object {
+        @Volatile private var nativeInitialized = false
+
+        @Synchronized
+        private fun ensureInitialized(context: Context) {
+            if (!nativeInitialized) {
+                PeerConnectionFactory.initialize(
+                    PeerConnectionFactory.InitializationOptions.builder(context.applicationContext).createInitializationOptions()
+                )
+                nativeInitialized = true
+            }
+        }
+    }
+
     init {
-        PeerConnectionFactory.initialize(
-            PeerConnectionFactory.InitializationOptions.builder(context.applicationContext).createInitializationOptions()
-        )
+        ensureInitialized(context)
         factory = PeerConnectionFactory.builder()
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(egl.eglBaseContext, true, true))
             .setVideoDecoderFactory(DefaultVideoDecoderFactory(egl.eglBaseContext))
