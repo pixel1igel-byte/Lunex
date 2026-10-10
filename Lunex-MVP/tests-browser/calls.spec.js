@@ -47,6 +47,14 @@ test('two real browser peers complete audio and video WebRTC calls', async ({ br
     await bob.getByRole('button', { name: /Notification smoke test/ }).click();
     await expect(bob.locator('.chat-header')).toContainText('Alice E2E');
 
+    // Verify authenticated file upload, delivery as a message and download.
+    await alice.locator('input[accept="image/jpeg,image/png,image/gif,image/webp,application/pdf,text/plain"]').setInputFiles({ name: 'lunex-attachment.txt', mimeType: 'text/plain', buffer: Buffer.from('Lunex attachment E2E') });
+    await expect(bob.getByRole('button', { name: /lunex-attachment.txt/ })).toBeVisible({ timeout: 10000 });
+    const downloadPromise = bob.waitForEvent('download');
+    await bob.getByRole('button', { name: /lunex-attachment.txt/ }).click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toBe('lunex-attachment.txt');
+
     await alice.getByTitle('Голосовой звонок').click();
     await acceptCall(bob);
     await Promise.all([expectConnected(alice), expectConnected(bob)]);
