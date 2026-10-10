@@ -9,7 +9,8 @@ import kotlinx.coroutines.flow.update
 internal data class LocalNodeUiState(
     val peers: List<LanPeer> = emptyList(),
     val status: String = "Запуск узла Lunex…",
-    val lastMessage: LocalNodeMessage? = null
+    val lastMessage: LocalNodeMessage? = null,
+    val lastFile: LocalNodeFile? = null
 )
 
 /**
