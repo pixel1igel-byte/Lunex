@@ -96,7 +96,7 @@ app.disable('x-powered-by');
 app.use(express.json({ limit: '32kb', strict: true }));
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer');
-  res.setHeader('X-Frame-Options', 'DENY'); res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('X-Frame-Options', 'DENY'); res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=()');
   next();
 });
 const authLimiters = new Map();
