@@ -229,6 +229,13 @@ private fun LunexApp() {
 
 
     fun disconnect() { socket?.disconnect(); socket?.off(); socket = null }
+    fun replayPending(s: Socket, kind: String, targetId: String) {
+        outbox.pending().filter { it.kind == kind && it.targetId == targetId }.forEach { pending ->
+            val payload = JSONObject().put("clientMessageId", pending.clientId).put("text", pending.text)
+            if (kind == "dm") s.emit("dm:send", payload.put("conversationId", targetId))
+            else s.emit("message:send", payload.put("channelId", targetId))
+        }
+    }
     fun connectSocket(authToken: String) {
         disconnect()
         try {
@@ -238,12 +245,9 @@ private fun LunexApp() {
                 val ch = activeChannel
                 if (ch.isNotBlank() && activeDm == null) s.emit("channel:join", ch)
                 activeDm?.let { s.emit("dm:join", it.id) }
-                // Replay durable local messages using stable IDs; server deduplicates retries.
-                outbox.pending().forEach { pending ->
-                    val payload = JSONObject().put("clientMessageId", pending.clientId).put("text", pending.text)
-                    if (pending.kind == "dm") s.emit("dm:send", payload.put("conversationId", pending.targetId))
-                    else s.emit("message:send", payload.put("channelId", pending.targetId))
-                }
+                // Only replay messages for a room this socket has joined.
+                activeDm?.let { replayPending(s, "dm", it.id) }
+                    ?: activeChannel.takeIf { it.isNotBlank() }?.let { replayPending(s, "channel", it) }
             }
             s.on("message:ack", Emitter.Listener { args ->
                 val event = args.firstOrNull() as? JSONObject ?: return@Listener
@@ -395,7 +399,7 @@ private fun LunexApp() {
                             FilterChip(selected = activeCommunity == c.id && activeDm == null, onClick = {
                                 activeCommunity = c.id; activeDm = null
                                 val ch = c.channels.firstOrNull { it.type == "text" }
-                                if (ch != null) { activeChannel = ch.id; activeChannelName = ch.name; messages = emptyList(); socket?.emit("channel:join", ch.id); scope.launch { runCatching { refreshChannel(ch.id, token) }.onFailure { notice = it.message ?: "Ошибка загрузки" } } }
+                                if (ch != null) { activeChannel = ch.id; activeChannelName = ch.name; messages = emptyList(); socket?.emit("channel:join", ch.id); socket?.let { replayPending(it, "channel", ch.id) }; scope.launch { runCatching { refreshChannel(ch.id, token) }.onFailure { notice = it.message ?: "Ошибка загрузки" } } }
                             }, label = { Text(c.name) })
                         }
                     }
@@ -420,12 +424,12 @@ private fun LunexApp() {
                                     val other = res.optJSONObject("other") ?: JSONObject()
                                     val chat = DirectChat(res.optString("id"), other.optString("id"), other.optString("username"), other.optString("displayName"), res.optString("lastMessage"))
                                     dms = loadDms(server, token).let { listOf(chat) + it.filter { d -> d.id != chat.id } }
-                                    activeDm = chat; activeChannel = ""; messages = emptyList(); socket?.emit("dm:join", chat.id); refreshDm(chat, token); dmUsername = ""; showNewDm = false
+                                    activeDm = chat; activeChannel = ""; messages = emptyList(); socket?.emit("dm:join", chat.id); socket?.let { replayPending(it, "dm", chat.id) }; refreshDm(chat, token); dmUsername = ""; showNewDm = false
                                 } catch(e:Exception) { notice=e.message ?: "Не удалось создать чат" }
                             } }, modifier = Modifier.testTag("open-dm-submit")) { Text("Открыть") }
                         }
                         LazyRow(contentPadding = PaddingValues(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            items(dms) { d -> AssistChip(onClick = { activeDm=d; activeChannel=""; messages=emptyList(); socket?.emit("dm:join", d.id); scope.launch { runCatching { refreshDm(d,token) }.onFailure { notice=it.message ?: "Ошибка загрузки" } } }, label = { Text(d.displayName.ifBlank { d.username }) }) }
+                            items(dms) { d -> AssistChip(onClick = { activeDm=d; activeChannel=""; messages=emptyList(); socket?.emit("dm:join", d.id); socket?.let { replayPending(it, "dm", d.id) }; scope.launch { runCatching { refreshDm(d,token) }.onFailure { notice=it.message ?: "Ошибка загрузки" } } }, label = { Text(d.displayName.ifBlank { d.username }) }) }
                         }
                     }
                     Row(Modifier.fillMaxWidth().background(Panel2).padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
