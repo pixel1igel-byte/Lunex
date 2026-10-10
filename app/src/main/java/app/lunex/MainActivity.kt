@@ -143,7 +143,7 @@ private fun LunexApp() {
     var displayName by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var register by remember { mutableStateOf(false) }
-    var localMode by remember { mutableStateOf(false) }
+    var localMode by remember { mutableStateOf(true) }
     var currentName by remember { mutableStateOf("") }
     var communities by remember { mutableStateOf(emptyList<Community>()) }
     var activeCommunity by remember { mutableStateOf("") }
