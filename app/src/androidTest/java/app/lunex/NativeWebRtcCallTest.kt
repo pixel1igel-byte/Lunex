@@ -9,6 +9,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.rule.GrantPermissionRule
@@ -29,11 +30,12 @@ class NativeWebRtcCallTest {
 
     @Test
     fun androidCompletesAudioAndVideoCallsWithBrowserPeer() {
-        compose.onNodeWithTag("server-url").performTextReplacement("http://10.0.2.2:3001")
         compose.onNodeWithTag("toggle-register").performClick()
+        compose.onNodeWithTag("server-url").performTextReplacement("http://10.0.2.2:3001")
         compose.onNodeWithTag("auth-username").performTextInput("e2e_android")
         compose.onNodeWithTag("auth-display-name").performTextInput("Android E2E")
         compose.onNodeWithTag("auth-password").performTextInput("Lunex-test-password-2026")
+        compose.onNodeWithTag("auth-password").performImeAction()
         compose.onNodeWithTag("auth-submit").performClick()
 
         compose.waitUntil(30000) {
