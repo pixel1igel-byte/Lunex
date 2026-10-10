@@ -93,8 +93,13 @@ private suspend fun request(base: String, path: String, method: String = "GET", 
             val status = conn.responseCode
             val stream = if (status in 200..299) conn.inputStream else conn.errorStream
             val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-            val json = if (text.isBlank()) JSONObject() else JSONObject(text)
+            val json = if (text.isBlank()) JSONObject() else runCatching { JSONObject(text) }.getOrElse {
+                JSONObject().put("error", text.trim().take(500).ifBlank { "Сервер вернул ответ в неожиданном формате." })
+            }
             if (status !in 200..299) throw IllegalStateException(json.optString("error").ifBlank { "Ошибка сервера ($status)" })
+            if (text.isNotBlank() && !text.trimStart().startsWith("{")) {
+                throw IllegalStateException("Сервер вернул не JSON (HTTP $status): " + text.trim().take(300))
+            }
             json
         } finally { conn.disconnect() }
     }
