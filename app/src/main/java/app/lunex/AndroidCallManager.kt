@@ -199,6 +199,7 @@ internal class AndroidCallManager(
                 }
                 currentCallId = eventData.optString("callId")
                 currentConversationId = eventData.optString("conversationId", localRoomId)
+                if (currentConversationId.isNotBlank()) localRoomId = currentConversationId
                 targetUserId = eventData.optString("fromNodeId")
                 pendingOffer = eventData.optJSONObject("offer")
                 currentMode = eventData.optString("mode", "audio")
