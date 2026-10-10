@@ -100,13 +100,23 @@ internal class LocalNodeTransport(
     fun join(peer: LanPeer, token: String, callback: (Boolean, String) -> Unit) {
         io.execute {
             try {
+                val hello = request(peer, JSONObject().put("op", "hello"))
+                if (!hello.optBoolean("ok") || hello.optString("nodeId").isBlank()) {
+                    throw IllegalStateException("По адресу не найден узел Lunex.")
+                }
+                require(hello.optString("nodeId") != store.serverId()) { "Нельзя подключиться к самому себе." }
                 val response = request(peer, JSONObject().put("op", "join").put("token", token))
                 if (!response.optBoolean("ok")) throw IllegalStateException(response.optString("error", "Приглашение не принято"))
                 val roomId = response.getString("roomId")
                 val roomName = response.optString("roomName", "Lunex room")
+                val namedPeer = peer.copy(name = hello.optString("name").ifBlank { peer.name })
+                peers[hello.getString("nodeId")] = namedPeer
+                store.rememberPeer(hello.getString("nodeId"), namedPeer.name, endpointOf(namedPeer))
+                main.post { onPeersChanged(peers()) }
                 store.joinRoom(roomId, roomName, token)
-                sync(peer, roomId, token)
-                main.post { callback(true, "Комната «$roomName» подключена") }
+                sync(peer, roomId)
+                syncAll()
+                main.post { callback(true, "Комната «$roomName» подключена; узел добавлен в mesh.") }
             } catch (e: Exception) {
                 main.post { callback(false, e.message ?: "Не удалось подключиться к узлу") }
             }
@@ -238,6 +248,13 @@ internal class LocalNodeTransport(
                 if (accepted) break
             }
         }
+    }
+
+    private fun endpointOf(peer: LanPeer): String {
+        val host = if (peer.host is java.net.Inet6Address) {
+            "[" + peer.host.hostAddress.substringBefore('%') + "]"
+        } else peer.host.hostAddress
+        return host + ":" + peer.port
     }
 
     private fun request(peer: LanPeer, payload: JSONObject): JSONObject {
