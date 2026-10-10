@@ -246,6 +246,31 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                 } else {
                     Text("Нажми «Пригласить», чтобы создать ссылку для этой комнаты.", color = Color(0xFFAAA0BC), fontSize = 11.sp)
                 }
+                Text("Участники и звонки", color = Color.White, fontWeight = FontWeight.Bold)
+                if (roomPeers.isEmpty()) {
+                    Text("Пока нет подключённых участников этой комнаты.", color = Color(0xFFAAA0BC), fontSize = 11.sp)
+                } else {
+                    roomPeers.take(12).forEach { peer ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(peer.name, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                Text(peer.id, color = Color(0xFFAAA0BC), fontSize = 9.sp)
+                            }
+                            IconButton(onClick = {
+                                callMode = "audio"
+                                withCallPermissions { callManager.startOutgoing(room.id, peer.id, "audio") }
+                            }, modifier = Modifier.size(40.dp)) {
+                                Icon(Icons.Default.Call, contentDescription = "Голосовой звонок", tint = Color(0xFFB56BFF))
+                            }
+                            IconButton(onClick = {
+                                callMode = "video"
+                                withCallPermissions { callManager.startOutgoing(room.id, peer.id, "video") }
+                            }, modifier = Modifier.size(40.dp)) {
+                                Icon(Icons.Default.Videocam, contentDescription = "Видеозвонок", tint = Color(0xFFB56BFF))
+                            }
+                        }
+                    }
+                }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("Файлы комнаты", color = Color.White, fontWeight = FontWeight.Bold)
                     OutlinedButton(
@@ -299,5 +324,63 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
             TextButton(onClick = { loggedIn = false; isRegister = false; selected = null; invite = "" }) { Text("Выйти") }
         }
         if (shownStatus.isNotBlank()) Text(shownStatus, color = Color(0xFFFF8D9B), fontSize = 12.sp)
+    }
+    if (loggedIn && callState !in setOf("idle", "ended", "rejected", "failed")) {
+        val isIncoming = incomingCall != null
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text(if (isIncoming) "Входящий ${if (callMode == "video") "видеозвонок" else "звонок"}" else if (callMode == "video") "Видеозвонок" else "Голосовой звонок") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        incomingCall?.optJSONObject("caller")?.optString("displayName").orEmpty()
+                            .ifBlank { roomPeers.firstOrNull { it.id == callManager.currentPeerId() }?.name ?: "Собеседник" },
+                        color = Color(0xFFAAA0BC)
+                    )
+                    Text(when (callState) {
+                        "calling" -> "Вызов…"
+                        "incoming" -> "Входящий вызов"
+                        "connecting" -> "Подключаемся…"
+                        "connected" -> "Соединение установлено"
+                        else -> "Подготовка звонка…"
+                    })
+                    if (callMode == "video") {
+                        localVideoTrack?.let { Text("Твоё видео", fontWeight = FontWeight.SemiBold); CallVideoPreview(it, callManager, true) }
+                        remoteVideoTrack?.let { Text("Видео собеседника", fontWeight = FontWeight.SemiBold); CallVideoPreview(it, callManager, false) }
+                    }
+                }
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (isIncoming) {
+                        TextButton(onClick = {
+                            withCallPermissions {
+                                incomingCall = null
+                                callState = "connecting"
+                                callManager.acceptIncoming()
+                            }
+                        }) { Text("Принять") }
+                        TextButton(onClick = { callManager.rejectIncoming() }) { Text("Отклонить", color = Color(0xFFFF7188)) }
+                    } else {
+                        if (callState == "connected") {
+                            TextButton(onClick = { micEnabled = !micEnabled; callManager.setMicrophoneEnabled(micEnabled) }) {
+                                Icon(if (micEnabled) Icons.Default.Mic else Icons.Default.MicOff, null)
+                                Text("Микрофон")
+                            }
+                            if (callMode == "video") {
+                                TextButton(onClick = { cameraEnabled = !cameraEnabled; callManager.setCameraEnabled(cameraEnabled) }) {
+                                    Icon(if (cameraEnabled) Icons.Default.Videocam else Icons.Default.VideocamOff, null)
+                                    Text("Камера")
+                                }
+                            }
+                        }
+                        TextButton(onClick = { callManager.endCall() }) {
+                            Icon(Icons.Default.CallEnd, null, tint = Color(0xFFFF7188))
+                            Text("Завершить", color = Color(0xFFFF7188))
+                        }
+                    }
+                }
+            }
+        )
     }
 }
