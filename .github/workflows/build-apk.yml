@@ -11,7 +11,7 @@ on:
       - 'gradle.properties'
       - '.github/workflows/build-apk.yml'
   push:
-    branches: [ main, master ]
+    branches: [ '**' ]
     paths:
       - 'app/**'
       - 'Lunex-MVP/**'
