@@ -217,7 +217,10 @@ internal class LocalNodeTransport(
                         val roomId = store.roomForInvite(token)
                         val room = roomId?.let { store.room(it) }
                         if (room == null) JSONObject().put("ok", false).put("error", "Приглашение недействительно")
-                        else JSONObject().put("ok", true).put("roomId", room.id).put("roomName", room.name)
+                        else {
+                            request.optString("nodeId").takeIf { it.isNotBlank() }?.let { store.rememberPeerRoom(it, room.id) }
+                            JSONObject().put("ok", true).put("roomId", room.id).put("roomName", room.name)
+                        }
                     }
                     "peers" -> {
                         val roomId = request.optString("roomId")
@@ -225,9 +228,10 @@ internal class LocalNodeTransport(
                         if (store.roomForInvite(token) != roomId) {
                             JSONObject().put("ok", false).put("error", "Нет доступа к комнате")
                         } else {
+                            request.optString("nodeId").takeIf { it.isNotBlank() }?.let { store.rememberPeerRoom(it, roomId) }
                             val array = org.json.JSONArray()
                             peers.forEach { (peerId, peer) ->
-                                if (peerId != store.serverId()) {
+                                if (peerId != store.serverId() && store.isPeerInRoom(peerId, roomId)) {
                                     array.put(JSONObject()
                                         .put("nodeId", peerId)
                                         .put("name", peer.name)
@@ -244,6 +248,7 @@ internal class LocalNodeTransport(
                         if (store.roomForInvite(authToken) != roomId || store.room(roomId) == null) {
                             JSONObject().put("ok", false).put("error", "Нет доступа к комнате")
                         } else {
+                            request.optString("nodeId").takeIf { it.isNotBlank() }?.let { store.rememberPeerRoom(it, roomId) }
                             val inserted = store.rememberInviteToken(roomId, inviteToken)
                             if (inserted) {
                                 val sourceAddress = socket.inetAddress
@@ -260,6 +265,7 @@ internal class LocalNodeTransport(
                             message.body.length > 4000 || message.id.length > 128 || message.senderName.length > 80) {
                             JSONObject().put("ok", false).put("error", "Нет доступа к комнате или сообщение некорректно")
                         } else {
+                            request.optString("fromNodeId").takeIf { it.isNotBlank() }?.let { store.rememberPeerRoom(it, roomId) }
                             // Deduplication is the loop guard: a node relays a message only
                             // the first time it stores that message ID.
                             val inserted = store.addMessage(message)
@@ -276,6 +282,7 @@ internal class LocalNodeTransport(
                         val roomId = request.optString("roomId")
                         if (store.roomForInvite(token) != roomId) JSONObject().put("ok", false).put("error", "Нет доступа к комнате")
                         else {
+                            request.optString("nodeId").takeIf { it.isNotBlank() }?.let { store.rememberPeerRoom(it, roomId) }
                             val array = org.json.JSONArray()
                             store.messages(roomId).forEach { array.put(it.toJson()) }
                             JSONObject().put("ok", true).put("messages", array)
