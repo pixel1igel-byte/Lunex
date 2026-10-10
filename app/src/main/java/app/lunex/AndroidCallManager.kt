@@ -40,6 +40,10 @@ internal class AndroidCallManager(
     private val onError: (String) -> Unit
 ) {
     private var socket: Socket? = null
+    private var localTransport: LocalNodeTransport? = null
+    private var localRoomId = ""
+    private var localNodeId = ""
+    private var localDisplayName = ""
     private val egl: EglBase
     private val factory: PeerConnectionFactory
     private var peer: PeerConnection? = null
@@ -92,6 +96,11 @@ internal class AndroidCallManager(
     }
 
     fun bind(socket: Socket) {
+        localTransport?.setCallSignalListener(null)
+        localTransport = null
+        localRoomId = ""
+        localNodeId = ""
+        localDisplayName = ""
         this.socket = socket
         socket.on("call:incoming") { args ->
             val event = args.firstOrNull() as? JSONObject ?: return@on
@@ -144,6 +153,83 @@ internal class AndroidCallManager(
         }
     }
 
+    fun bindLocal(transport: LocalNodeTransport, roomId: String, nodeId: String, displayName: String) {
+        socket = null
+        localTransport?.setCallSignalListener(null)
+        localTransport = transport
+        localRoomId = roomId
+        localNodeId = nodeId
+        localDisplayName = displayName.take(80)
+        transport.setCallSignalListener { event, payload -> handleLocalSignal(event, payload) }
+    }
+
+    private fun emitSignal(event: String, payload: JSONObject, targetOverride: String? = null) {
+        val cloudSocket = socket
+        if (cloudSocket != null) {
+            cloudSocket.emit(event, payload)
+            return
+        }
+        val transport = localTransport ?: return
+        val target = targetOverride ?: targetUserId
+        if (target.isBlank()) {
+            onError("Не удалось определить узел собеседника для сигнала звонка.")
+            return
+        }
+        transport.sendCallSignal(localRoomId, target, event, payload, localDisplayName)
+    }
+
+    private fun handleLocalSignal(event: String, eventData: JSONObject) {
+        when (event) {
+            "call:incoming" -> {
+                if (currentCallId.isNotBlank()) {
+                    emitSignal("call:reject", JSONObject()
+                        .put("callId", eventData.optString("callId"))
+                        .put("conversationId", eventData.optString("conversationId")), eventData.optString("fromNodeId"))
+                    return
+                }
+                currentCallId = eventData.optString("callId")
+                currentConversationId = eventData.optString("conversationId", localRoomId)
+                targetUserId = eventData.optString("fromNodeId")
+                pendingOffer = eventData.optJSONObject("offer")
+                currentMode = eventData.optString("mode", "audio")
+                isCaller = false
+                connectionEstablished = false
+                scheduleTimeout("Не удалось дозвониться: нет ответа.")
+                onState("incoming")
+                onIncoming(eventData)
+            }
+            "call:accepted" -> {
+                if (eventData.optString("callId") != currentCallId) return
+                val answer = eventData.optJSONObject("answer") ?: return
+                val desc = SessionDescription(SessionDescription.Type.fromCanonicalForm(answer.optString("type", "answer")), answer.optString("sdp"))
+                peer?.setRemoteDescription(object : EmptySdpObserver() {
+                    override fun onSetSuccess() {
+                        remoteDescriptionReady = true
+                        drainRemoteCandidates()
+                        onState("connecting")
+                    }
+                    override fun onSetFailure(error: String) { fail("Не удалось принять ответ звонка: $error") }
+                }, desc)
+            }
+            "call:signal" -> {
+                if (eventData.optString("callId") != currentCallId) return
+                val candidateJson = eventData.optJSONObject("signal")?.optJSONObject("candidate") ?: return
+                val candidate = IceCandidate(
+                    candidateJson.optString("sdpMid").takeIf { it != "null" },
+                    candidateJson.optInt("sdpMLineIndex"),
+                    candidateJson.optString("candidate")
+                )
+                if (remoteDescriptionReady) peer?.addIceCandidate(candidate) else pendingRemoteCandidates.add(candidate)
+            }
+            "call:rejected" -> {
+                if (eventData.optString("callId") == currentCallId) { closeInternal(); onState("rejected") }
+            }
+            "call:ended" -> {
+                if (eventData.optString("callId") == currentCallId) { closeInternal(); onState("ended") }
+            }
+        }
+    }
+
     fun startOutgoing(conversationId: String, toUserId: String, mode: String) {
         if (currentCallId.isNotBlank()) { onError("Звонок уже активен."); return }
         currentCallId = java.util.UUID.randomUUID().toString()
@@ -163,7 +249,7 @@ internal class AndroidCallManager(
                     peer?.setLocalDescription(object : EmptySdpObserver() {
                         override fun onSetSuccess() {
                             val offer = JSONObject().put("type", desc.type.canonicalForm()).put("sdp", desc.description)
-                            socket?.emit("call:invite", JSONObject()
+                            emitSignal("call:invite", JSONObject()
                                 .put("callId", currentCallId)
                                 .put("conversationId", currentConversationId)
                                 .put("toUserId", targetUserId)
@@ -195,7 +281,7 @@ internal class AndroidCallManager(
                         override fun onCreateSuccess(answer: SessionDescription) {
                             peer?.setLocalDescription(object : EmptySdpObserver() {
                                 override fun onSetSuccess() {
-                                    socket?.emit("call:accept", JSONObject()
+                                    emitSignal("call:accept", JSONObject()
                                         .put("callId", currentCallId)
                                         .put("conversationId", currentConversationId)
                                         .put("answer", JSONObject().put("type", answer.type.canonicalForm()).put("sdp", answer.description)))
@@ -215,13 +301,13 @@ internal class AndroidCallManager(
     }
 
     fun rejectIncoming() {
-        if (currentCallId.isNotBlank()) socket?.emit("call:reject", JSONObject().put("callId", currentCallId).put("conversationId", currentConversationId))
+        if (currentCallId.isNotBlank()) emitSignal("call:reject", JSONObject().put("callId", currentCallId).put("conversationId", currentConversationId))
         closeInternal()
         onState("idle")
     }
 
     fun endCall() {
-        if (currentCallId.isNotBlank()) socket?.emit("call:end", JSONObject().put("callId", currentCallId).put("conversationId", currentConversationId))
+        if (currentCallId.isNotBlank()) emitSignal("call:end", JSONObject().put("callId", currentCallId).put("conversationId", currentConversationId))
         closeInternal()
         onState("idle")
     }
@@ -248,6 +334,10 @@ internal class AndroidCallManager(
         socket?.off("call:rejected")
         socket?.off("call:ended")
         socket = null
+        localTransport?.setCallSignalListener(null)
+        localTransport = null
+        localRoomId = ""
+        localNodeId = ""
         factory.dispose()
         egl.release()
     }
@@ -304,7 +394,7 @@ internal class AndroidCallManager(
                     .put("sdpMLineIndex", candidate.sdpMLineIndex)
                     .put("candidate", candidate.sdp))
                 val payload = JSONObject().put("callId", currentCallId).put("conversationId", currentConversationId).put("signal", json)
-                if (isCaller && !localSignalReady) pendingLocalCandidates.add(payload) else socket?.emit("call:signal", payload)
+                if (isCaller && !localSignalReady) pendingLocalCandidates.add(payload) else emitSignal("call:signal", payload)
             }
             override fun onIceCandidatesRemoved(candidates: Array<IceCandidate>) {}
             override fun onAddStream(stream: MediaStream) { stream.videoTracks.firstOrNull()?.let(onRemoteVideo) }
@@ -324,7 +414,7 @@ internal class AndroidCallManager(
     }
 
     private fun flushLocalCandidates() {
-        pendingLocalCandidates.forEach { socket?.emit("call:signal", it) }
+        pendingLocalCandidates.forEach { emitSignal("call:signal", it) }
         pendingLocalCandidates.clear()
     }
 
@@ -346,7 +436,7 @@ internal class AndroidCallManager(
     }
 
     private fun fail(message: String) {
-        if (currentCallId.isNotBlank()) socket?.emit("call:end", JSONObject().put("callId", currentCallId).put("conversationId", currentConversationId))
+        if (currentCallId.isNotBlank()) emitSignal("call:end", JSONObject().put("callId", currentCallId).put("conversationId", currentConversationId))
         closeInternal()
         onState("failed")
         onError(message)
