@@ -42,6 +42,7 @@ internal object LocalNodeRuntime {
             store,
             onPeersChanged = { peers -> mutableState.update { it.copy(peers = peers) } },
             onMessage = { message -> mutableState.update { it.copy(lastMessage = message) } },
+            onFile = { file -> mutableState.update { it.copy(lastFile = file) } },
             onStatus = { status -> mutableState.update { it.copy(status = status) } }
         )
         transportInstance = transport
