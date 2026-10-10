@@ -43,7 +43,7 @@ class OfflineOutboxTest {
         context.deleteDatabase("lunex-history-test.db")
     }
 
-    private class TestOutbox(context: Context, name: String) : OfflineOutbox(context) {
+    private class TestOutbox(context: Context, name: String) : OfflineOutbox(context, name) {
         // OfflineOutbox uses the production DB name; the tests isolate state by clearing it.
     }
 }
