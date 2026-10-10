@@ -146,37 +146,42 @@ internal class LocalNodeTransport(
         )
         store.addMessage(message)
         onMessage(message)
-        io.execute {
-            peers().forEach { peer ->
-                runCatching {
-                    request(peer, JSONObject().put("op", "message").put("token", token)
-                        .put("roomId", roomId).put("message", message.toJson()))
-                }
-            }
-        }
+        io.execute { relayToPeers(message, null) }
     }
 
     fun syncAll() {
         io.execute {
             peers().forEach { peer ->
                 store.rooms().forEach { room ->
-                    val token = store.inviteTokenForRoom(room.id) ?: return@forEach
-                    runCatching { sync(peer, room.id, token) }
+                    if (store.inviteTokensForRoom(room.id).isNotEmpty()) {
+                        runCatching { sync(peer, room.id) }
+                    }
                 }
             }
         }
     }
 
-    private fun sync(peer: LanPeer, roomId: String, token: String) {
-        val response = request(peer, JSONObject().put("op", "sync").put("roomId", roomId).put("token", token))
-        val array = response.optJSONArray("messages") ?: return
+    private fun sync(peer: LanPeer, roomId: String) {
+        // A room can have several still-valid invitation tokens. Try each one
+        // because a destination may have joined using an older invitation.
+        var response: JSONObject? = null
+        for (token in store.inviteTokensForRoom(roomId)) {
+            val candidate = runCatching {
+                request(peer, JSONObject().put("op", "sync").put("roomId", roomId).put("token", token))
+            }.getOrNull()
+            if (candidate?.optBoolean("ok") == true) {
+                response = candidate
+                break
+            }
+        }
+        val array = response?.optJSONArray("messages") ?: return
         for (i in 0 until array.length()) {
             val message = LocalNodeMessage.fromJson(array.getJSONObject(i))
             // Sync is also a propagation path: a returning/offline node can bring
             // older messages back into the mesh. Relay only newly inserted IDs.
             if (store.addMessage(message)) {
                 main.post { onMessage(message) }
-                io.execute { relayToPeers(message, token, peer.host) }
+                io.execute { relayToPeers(message, peer.host) }
             }
         }
     }
@@ -240,14 +245,21 @@ internal class LocalNodeTransport(
      * forwarding, so messages can cross multiple phone nodes without a central
      * server and without an endless relay loop.
      */
-    private fun relayToPeers(message: LocalNodeMessage, token: String, sourceAddress: InetAddress) {
-        peers().filterNot { it.host.address.contentEquals(sourceAddress.address) }.forEach { peer ->
-            runCatching {
-                request(peer, JSONObject()
-                    .put("op", "message")
-                    .put("token", token)
-                    .put("roomId", message.roomId)
-                    .put("message", message.toJson()))
+    private fun relayToPeers(message: LocalNodeMessage, sourceAddress: InetAddress?) {
+        peers().filterNot { peer ->
+            sourceAddress != null && peer.host.address.contentEquals(sourceAddress.address)
+        }.forEach { peer ->
+            // Each peer may possess a different valid invite token for this room.
+            // Stop at the first token the destination accepts.
+            for (token in store.inviteTokensForRoom(message.roomId)) {
+                val accepted = runCatching {
+                    request(peer, JSONObject()
+                        .put("op", "message")
+                        .put("token", token)
+                        .put("roomId", message.roomId)
+                        .put("message", message.toJson()))
+                }.getOrNull()?.optBoolean("ok") == true
+                if (accepted) break
             }
         }
     }
