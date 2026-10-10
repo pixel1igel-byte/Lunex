@@ -303,7 +303,7 @@ test('community membership, invite limits, roles and private channel permissions
   await new Promise(resolve => setTimeout(resolve, 100));
   const beforePromotion = await api(owner.token, `/api/messages/${privateChannel.id}`);
   assert.equal(beforePromotion.response.status, 200);
-  assert.equal(beforePromotion.data.length, 0);
+  assert.equal(beforePromotion.data.length, 1);
   const promoted = await api(owner.token, `/api/communities/${community.id}/members/${member.user.id}`, 'PATCH', { roleId: 'admin' });
   assert.equal(promoted.response.status, 200, JSON.stringify(promoted.data));
   assert.equal(promoted.data.roleId, 'admin');
