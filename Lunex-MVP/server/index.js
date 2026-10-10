@@ -262,7 +262,7 @@ app.delete('/api/communities/:id/members/:userId', authHttp, (req, res) => {
 app.patch('/api/communities/:id/roles/:roleId', authHttp, (req, res) => {
   const community = db.communities.find(item => item.id === req.params.id);
   if (!community) return res.status(404).json({ error: 'Сообщество не найдено.' });
-  if (!canManageCommunity(community, req.user.id)) return res.status(403).json({ error: 'Изменять роли может только владелец или администратор.' });
+  if (community.ownerId !== req.user.id) return res.status(403).json({ error: 'Изменять права ролей может только владелец сообщества.' });
   const role = (community.roles || []).find(item => item.id === req.params.roleId && item.id !== 'owner');
   if (!role) return res.status(404).json({ error: 'Роль не найдена.' });
   const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 32) : role.name;
