@@ -175,6 +175,59 @@ internal class LocalNodeTransport(
         io.execute { relayToPeers(message, null) }
     }
 
+    fun shareFile(uri: Uri, roomId: String, senderName: String, callback: (Boolean, String) -> Unit) {
+        io.execute {
+            var created: File? = null
+            try {
+                require(store.inviteTokensForRoom(roomId).isNotEmpty()) { "Сначала создай приглашение для комнаты." }
+                var fileName = uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "file"
+                app.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (index >= 0) fileName = cursor.getString(index)?.takeIf { it.isNotBlank() } ?: fileName
+                    }
+                }
+                fileName = fileName.substringAfterLast('/').substringAfterLast('\\').take(255).ifBlank { "file" }
+                val mimeType = (app.contentResolver.getType(uri) ?: "application/octet-stream").take(128)
+                val fileId = java.util.UUID.randomUUID().toString()
+                val directory = roomFilesDirectory(roomId)
+                if (!directory.exists() && !directory.mkdirs()) throw IllegalStateException("Не удалось создать каталог файлов.")
+                val destination = File(directory, fileId)
+                created = destination
+                val digest = MessageDigest.getInstance("SHA-256")
+                var size = 0L
+                val input = app.contentResolver.openInputStream(uri) ?: throw IllegalStateException("Не удалось открыть выбранный файл.")
+                input.use { source ->
+                    FileOutputStream(destination).use { output ->
+                        val buffer = ByteArray(16 * 1024)
+                        while (true) {
+                            val count = source.read(buffer)
+                            if (count < 0) break
+                            size += count
+                            require(size <= MAX_FILE_BYTES) { "Файл слишком большой. Максимум 25 МБ." }
+                            output.write(buffer, 0, count)
+                            digest.update(buffer, 0, count)
+                        }
+                    }
+                }
+                val sha = digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+                val metadata = LocalNodeFile(
+                    fileId, roomId, store.serverId(), senderName.take(80), fileName, mimeType,
+                    size, sha, ((size + FILE_CHUNK_BYTES - 1) / FILE_CHUNK_BYTES).toInt(),
+                    System.currentTimeMillis(), destination.absolutePath, true
+                )
+                store.insertFile(metadata)
+                onFile(metadata)
+                main.post { onStatus("Файл «$fileName» сохранён локально; синхронизирую с узлами комнаты…") }
+                syncAll()
+                main.post { callback(true, "Файл «$fileName» добавлен. Передача узлам идёт в фоне, повторная синхронизация будет при их подключении.") }
+            } catch (e: Exception) {
+                created?.let { runCatching { it.delete() } }
+                main.post { callback(false, e.message ?: "Не удалось добавить файл.") }
+            }
+        }
+    }
+
     fun syncAll() {
         io.execute {
             peers.entries.toList().forEach { entry ->
