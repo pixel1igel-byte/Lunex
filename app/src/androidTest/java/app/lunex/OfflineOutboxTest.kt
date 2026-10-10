@@ -14,7 +14,7 @@ class OfflineOutboxTest {
     fun pendingOutgoingMessagesSurviveReopenUntilAcknowledged() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         context.deleteDatabase("lunex-outbox-test.db")
-        val db = TestOutbox(context, "lunex-outbox-test.db")
+        val db = OfflineOutbox(context, "lunex-outbox-test.db")
         val pending = PendingMessage("client-1", "dm", "conversation-1", "hello", 123L)
         db.enqueue(pending)
         assertEquals(listOf(pending), db.pending())
@@ -32,7 +32,7 @@ class OfflineOutboxTest {
     fun deliveredHistoryIsDeduplicatedAndReadableOffline() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         context.deleteDatabase("lunex-history-test.db")
-        val db = TestOutbox(context, "lunex-history-test.db")
+        val db = OfflineOutbox(context, "lunex-history-test.db")
         val message = StoredMessage("server-1", "channel", "general", "Felix", "u1", "hello", "2026-10-10T12:00:00Z")
         db.store(message)
         db.store(message.copy(text = "hello updated"))
@@ -43,7 +43,4 @@ class OfflineOutboxTest {
         context.deleteDatabase("lunex-history-test.db")
     }
 
-    private class TestOutbox(context: Context, name: String) : OfflineOutbox(context, name) {
-        // OfflineOutbox uses the production DB name; the tests isolate state by clearing it.
-    }
 }
