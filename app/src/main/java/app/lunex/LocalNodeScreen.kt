@@ -94,10 +94,11 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
             onError = { message -> Handler(Looper.getMainLooper()).post { status = message } }
         )
     }
-    LaunchedEffect(selected?.id, loggedIn, activeName) {
+    LaunchedEffect(selected?.id, loggedIn, activeName, callState) {
         val room = selected
-        if (loggedIn && room != null) callManager.bindLocal(transport, room.id, store.serverId(), activeName)
-        else callManager.unbindLocal()
+        if (loggedIn && room != null) {
+            if (callState == "idle") callManager.bindLocal(transport, room.id, store.serverId(), activeName)
+        } else callManager.unbindLocal()
     }
     DisposableEffect(callManager) { onDispose { callManager.dispose() } }
     LaunchedEffect(selected?.id, nodeState.peers) {
