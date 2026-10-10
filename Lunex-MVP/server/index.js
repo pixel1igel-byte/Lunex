@@ -164,7 +164,7 @@ function roleFor(community, membership) {
 }
 function hasPermission(community, userId, permission, channel = null) {
   // Legacy seeded communities remain open so existing accounts keep working.
-  if (!community.ownerId) return true;
+  if (!community.ownerId) return permission === 'view' || permission === 'send';
   const member = communityMembership(community, userId);
   if (!member) return false;
   const role = roleFor(community, member);
@@ -182,7 +182,7 @@ function publicCommunity(community, userId) {
     roles: (community.roles || []).map(role => ({ id: role.id, name: role.name, permissions: role.id === 'owner' ? [] : role.permissions })),
     isMember: !community.ownerId || Boolean(member),
     myRole: member?.roleId || (!community.ownerId ? 'member' : null),
-    channels: (community.channels || []).filter(channel => hasPermission(community, userId, 'view', channel)).map(channel => ({ id: channel.id, name: channel.name, type: channel.type, private: Boolean(channel.private) }))
+    channels: (community.channels || []).filter(channel => hasPermission(community, userId, 'view', channel)).map(channel => ({ id: channel.id, name: channel.name, type: channel.type, private: Boolean(channel.private), categoryId: channel.categoryId || null }))
   };
 }
 function canManageCommunity(community, userId) {
