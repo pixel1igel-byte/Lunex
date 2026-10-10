@@ -172,6 +172,17 @@ test('live server relays authenticated WebRTC signaling only to direct-chat part
   const dmRes = await fetch(base + '/api/dms', { method: 'POST', headers: { authorization: `Bearer ${alice.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ username: 'call_bob' }) });
   assert.equal(dmRes.status, 200);
   const dm = await dmRes.json();
+  const uploadQuery = new URLSearchParams({ scope: 'dm', id: dm.id, name: 'private-test.txt', type: 'text/plain' });
+  const uploadResponse = await fetch(base + '/api/uploads?' + uploadQuery.toString(), { method: 'POST', headers: { authorization: `Bearer ${alice.token}`, 'content-type': 'application/octet-stream' }, body: Buffer.from('private attachment test') });
+  assert.equal(uploadResponse.status, 201);
+  const uploaded = await uploadResponse.json();
+  const aliceDownload = await fetch(base + '/api/uploads/' + uploaded.id, { headers: { authorization: `Bearer ${alice.token}` } });
+  assert.equal(aliceDownload.status, 200);
+  assert.equal(await aliceDownload.text(), 'private attachment test');
+  const bobDownload = await fetch(base + '/api/uploads/' + uploaded.id, { headers: { authorization: `Bearer ${bob.token}` } });
+  assert.equal(bobDownload.status, 200);
+  const malloryDownload = await fetch(base + '/api/uploads/' + uploaded.id, { headers: { authorization: `Bearer ${mallory.token}` } });
+  assert.equal(malloryDownload.status, 403);
   const a = await makeSocket(alice.token);
   const b = await makeSocket(bob.token);
   const m = await makeSocket(mallory.token);
