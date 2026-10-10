@@ -345,6 +345,7 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                         "connected" -> "Соединение установлено"
                         else -> "Подготовка звонка…"
                     })
+                    Text("Сигнализация идёт через узлы комнаты; участники комнаты могут видеть данные установления соединения. Связь зависит от NAT и доступности STUN/TURN.", color = Color(0xFFAAA0BC), fontSize = 10.sp)
                     if (callMode == "video") {
                         localVideoTrack?.let { Text("Твоё видео", fontWeight = FontWeight.SemiBold); CallVideoPreview(it, callManager, true) }
                         remoteVideoTrack?.let { Text("Видео собеседника", fontWeight = FontWeight.SemiBold); CallVideoPreview(it, callManager, false) }
