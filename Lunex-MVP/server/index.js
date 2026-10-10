@@ -203,6 +203,19 @@ app.get('/api/communities/:id/members', authHttp, (req, res) => {
     return { user: user ? publicUser(user) : { id: member.userId, username: 'unknown', displayName: 'Удалённый аккаунт' }, roleId: member.roleId, joinedAt: member.joinedAt };
   }));
 });
+app.patch('/api/communities/:id', authHttp, (req, res) => {
+  const community = db.communities.find(item => item.id === req.params.id);
+  if (!community) return res.status(404).json({ error: 'Сообщество не найдено.' });
+  if (!canManageCommunity(community, req.user.id)) return res.status(403).json({ error: 'Недостаточно прав для изменения сообщества.' });
+  if (typeof req.body?.name === 'string') {
+    const name = req.body.name.trim().slice(0, 48);
+    if (!name) return res.status(400).json({ error: 'Название сообщества не может быть пустым.' });
+    community.name = name;
+  }
+  if (typeof req.body?.description === 'string') community.description = req.body.description.trim().slice(0, 240);
+  saveDb(); io.emit('communities:changed', { communityId: community.id });
+  res.json(publicCommunity(community, req.user.id));
+});
 app.post('/api/communities/:id/invites', authHttp, (req, res) => {
   const community = db.communities.find(item => item.id === req.params.id);
   if (!community) return res.status(404).json({ error: 'Сообщество не найдено.' });
@@ -213,6 +226,15 @@ app.post('/api/communities/:id/invites', authHttp, (req, res) => {
   const invite = { code, createdBy: req.user.id, createdAt: new Date().toISOString(), uses: 0, maxUses };
   community.invites.push(invite); saveDb();
   res.status(201).json({ code, communityId: community.id, communityName: community.name, uses: invite.uses, maxUses: invite.maxUses });
+});
+app.delete('/api/communities/:id/invites/:code', authHttp, (req, res) => {
+  const community = db.communities.find(item => item.id === req.params.id);
+  if (!community) return res.status(404).json({ error: 'Сообщество не найдено.' });
+  if (!canManageCommunity(community, req.user.id)) return res.status(403).json({ error: 'Недостаточно прав для отзыва приглашения.' });
+  const before = (community.invites || []).length;
+  community.invites = (community.invites || []).filter(invite => invite.code !== req.params.code);
+  if (community.invites.length === before) return res.status(404).json({ error: 'Приглашение не найдено.' });
+  saveDb(); res.json({ ok: true });
 });
 app.post('/api/invites/:code/join', authHttp, (req, res) => {
   const community = db.communities.find(item => (item.invites || []).some(invite => invite.code === req.params.code));
