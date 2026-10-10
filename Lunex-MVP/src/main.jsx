@@ -138,8 +138,11 @@ function App() {
     const onNew = event => {
       if (event.channelId === activeChannel) setMessages(prev => [...prev, event.message].slice(-500));
     };
-    socket.on('message:new', onNew);
-    return () => socket.off('message:new', onNew);
+    const onDeleted = event => {
+      if (event.channelId === activeChannel) setMessages(prev => prev.filter(message=>message.id!==event.messageId));
+    };
+    socket.on('message:new', onNew); socket.on('message:deleted', onDeleted);
+    return () => { socket.off('message:new', onNew); socket.off('message:deleted', onDeleted); };
   }, [activeChannel, token]);
 
   useEffect(() => {
@@ -344,6 +347,11 @@ function App() {
     const remaining = communities.filter(item=>item.id!==community.id);
     setCommunities(remaining); setActiveCommunity(remaining[0]?.id || ''); setActiveChannel(remaining[0]?.channels?.[0]?.id || ''); setDm(null);
   }
+  async function deleteChannelMessage(message) {
+    if (!community || !channel) return;
+    const data = await communityAction(`/api/communities/${community.id}/channels/${channel.id}/messages/${message.id}`,'DELETE',undefined,'Сообщение удалено.');
+    if (data) setMessages(prev=>prev.filter(item=>item.id!==message.id));
+  }
   async function renameChannel(channel) {
     if (!community || !['owner','admin'].includes(community.myRole)) return;
     const name = window.prompt('Новое название канала', channel.name);
@@ -520,7 +528,7 @@ function App() {
         {channel?.type==='voice' ? <div className="chat-empty"><Headphones size={42}/><h2>{channel.name}</h2><p>Голосовой канал пока представлен как интерфейс. Передача аудио ещё не реализована.</p></div> :
         <><div className="messages" style={{backgroundImage:theme.wallpaper?`linear-gradient(#100c19aa,#100c19aa),url("${theme.wallpaper}")`:undefined}}>
           <div className="date-divider"><span>НАЧАЛО ПЕРЕПИСКИ</span></div>
-          {messages.map(m=><article className={`message ${m.user===user?'own':''}`} key={m.id}><div className={`avatar ${m.system?'system':''}`}>{m.user.slice(0,1).toUpperCase()}</div><div className="message-body"><div className="message-heading"><strong>{m.user}</strong>{m.system&&<span className="bot-tag">BOT</span>}<time>{new Date(m.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</time></div><div className="bubble">{m.text}</div></div></article>)}
+          {messages.map(m=><article className={`message ${m.user===user?'own':''}`} key={m.id}><div className={`avatar ${m.system?'system':''}`}>{m.user.slice(0,1).toUpperCase()}</div><div className="message-body"><div className="message-heading"><strong>{m.user}</strong>{m.system&&<span className="bot-tag">BOT</span>}<time>{new Date(m.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</time>{!m.system && (m.userId===userId || community?.myRole==='owner' || (community?.roles?.find(role=>role.id===community.myRole)?.permissions || []).includes('manage_messages')) && <button className="message-delete" title="Удалить сообщение" onClick={()=>deleteChannelMessage(m)}>×</button>}</div><div className="bubble">{m.text}</div></div></article>)}
           <div ref={bottomRef}/></div>
         <form className="composer" onSubmit={sendMessage}><button type="button" className="icon-btn attach" title="Прикрепить файл" onClick={()=>attachmentRef.current?.click()}><Paperclip/></button><input value={draft} onChange={e=>setDraft(e.target.value)} placeholder={`Написать в #${channel?.name || 'канал'}…`} maxLength={4000}/><div className="emoji-wrap"><button type="button" className="icon-btn" title="Вставить эмодзи" onClick={()=>setEmojiOpen(v=>!v)}><Smile/></button>{emojiOpen && <div className="emoji-popover">{['😀','😂','🥹','😍','😎','😭','🤔','👍','❤️','🔥','🎉','👀','✨','🌙','💜','🙌'].map(emoji=><button type="button" key={emoji} onClick={()=>{setDraft(v=>v+emoji);setEmojiOpen(false)}}>{emoji}</button>)}</div>}</div><button className="send-btn" disabled={!draft.trim()} title="Отправить"><Send size={18}/></button></form></>}
       </>}
