@@ -85,6 +85,7 @@ internal fun LocalNodeScreen(
     var selected by remember { mutableStateOf<LocalRoom?>(null) }
     var invite by remember { mutableStateOf("") }
     var inviteToJoin by remember { mutableStateOf("") }
+    var inviteRetry by remember { mutableIntStateOf(0) }
     var peerEndpoint by remember { mutableStateOf("") }
     var chatDraft by remember { mutableStateOf("") }
     var localMessages by remember { mutableStateOf(emptyList<LocalNodeMessage>()) }
@@ -120,7 +121,7 @@ internal fun LocalNodeScreen(
         localMessages = store.messages(room.id)
         roomFiles = store.files(room.id)
     }
-    LaunchedEffect(initialInvite, loggedIn) {
+    LaunchedEffect(initialInvite, loggedIn, inviteRetry) {
         val rawInvite = initialInvite?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
         val inviteUri = runCatching { Uri.parse(rawInvite) }.getOrNull()
         val token = inviteUri?.getQueryParameter("token").orEmpty()
@@ -459,6 +460,9 @@ internal fun LocalNodeScreen(
                 Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), color = Color(0xFF2B2138), shape = androidx.compose.foundation.shape.RoundedCornerShape(10.dp)) {
                     Row(Modifier.padding(horizontal = 10.dp, vertical = 7.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                         Text(status, color = Color(0xFFE7DDF2), fontSize = 11.sp, modifier = Modifier.weight(1f))
+                        if (!initialInvite.isNullOrBlank() && loggedIn && selected == null) {
+                            TextButton(onClick = { inviteRetry++ }) { Text("Повторить", color = Color(0xFFCB91FF), fontSize = 11.sp) }
+                        }
                         IconButton(onClick = { status = "" }, modifier = Modifier.size(24.dp)) { Icon(Icons.Default.Close, "Закрыть сообщение", tint = Color(0xFFAAA0BC)) }
                     }
                 }
