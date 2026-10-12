@@ -106,6 +106,12 @@ function allowAuthAttempt(req) {
   if (authLimiters.size > 5000) authLimiters.delete(authLimiters.keys().next().value);
   return authLimiters.get(key)();
 }
+const restMessageLimiters = new Map();
+function allowRestMessage(userId) {
+  if (!restMessageLimiters.has(userId)) restMessageLimiters.set(userId, createRateLimiter({ limit: 60, windowMs: 60_000 }));
+  if (restMessageLimiters.size > 5000) restMessageLimiters.delete(restMessageLimiters.keys().next().value);
+  return restMessageLimiters.get(userId)();
+}
 app.get('/api/call-config', authHttp, (req, res) => {
   const iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
   const turnUrls = String(process.env.LUNEX_TURN_URLS || '').split(',').map(value => value.trim()).filter(Boolean);
@@ -325,6 +331,29 @@ app.get('/api/dms/:id/messages', authHttp, (req, res) => {
   if (!conversation) return res.status(404).json({ error: 'Личный чат не найден.' });
   res.json(conversation.messages.slice(-MAX_HISTORY));
 });
+app.post('/api/dms/:id/messages', authHttp, (req, res) => {
+  if (!allowRestMessage(req.user.id)) return res.status(429).json({ error: 'Слишком много сообщений. Подождите немного.' });
+  const conversation = db.dms.find(d => d.id === req.params.id && d.userIds.includes(req.user.id));
+  if (!conversation) return res.status(404).json({ error: 'Личный чат не найден.' });
+  const text = typeof req.body?.text === 'string' ? req.body.text.trim().slice(0, MAX_MESSAGE_LENGTH) : '';
+  if (!text) return res.status(400).json({ error: 'Сообщение не может быть пустым.' });
+  const rawClientId = req.body?.clientMessageId;
+  const clientMessageId = typeof rawClientId === 'string' ? rawClientId : '';
+  if (clientMessageId && !/^[a-zA-Z0-9_-]{8,80}$/.test(clientMessageId)) return res.status(400).json({ error: 'Некорректный идентификатор сообщения.' });
+  const existing = clientMessageId ? conversation.messages.find(m => m.clientMessageId === clientMessageId && m.userId === req.user.id) : null;
+  if (existing) return res.json({ message: existing, duplicate: true });
+  const message = {
+    id: randomBytes(12).toString('hex'),
+    ...(clientMessageId ? { clientMessageId } : {}),
+    userId: req.user.id, user: req.user.displayName, text, time: new Date().toISOString()
+  };
+  conversation.messages.push(message);
+  conversation.messages = conversation.messages.slice(-MAX_HISTORY);
+  saveDb();
+  const event = { conversationId: conversation.id, message };
+  for (const userId of conversation.userIds) io.to(`user:${userId}`).emit('dm:new', event);
+  res.status(201).json({ message });
+});
 
 const uploadRoot = path.join(path.dirname(DATA), 'uploads');
 const MAX_UPLOAD_SIZE = 4 * 1024 * 1024;
@@ -374,6 +403,32 @@ app.get('/api/messages/:channelId', authHttp, (req, res) => {
   if (!community || !channel) return res.status(404).json({ error: 'Канал не найден.' });
   if (!hasPermission(community, req.user.id, 'view', channel)) return res.status(403).json({ error: 'Нет доступа к этому каналу.' });
   res.json(db.messages[req.params.channelId] || []);
+});
+app.post('/api/messages/:channelId', authHttp, (req, res) => {
+  if (!allowRestMessage(req.user.id)) return res.status(429).json({ error: 'Слишком много сообщений. Подождите немного.' });
+  const channelId = String(req.params.channelId || '').slice(0, 120);
+  const community = db.communities.find(item => (item.channels || []).some(channel => channel.id === channelId));
+  const channel = community?.channels.find(item => item.id === channelId);
+  if (!community || !channel) return res.status(404).json({ error: 'Канал не найден.' });
+  if (!hasPermission(community, req.user.id, 'send', channel)) return res.status(403).json({ error: 'Нет прав отправлять сообщения в этот канал.' });
+  const text = typeof req.body?.text === 'string' ? req.body.text.trim().slice(0, MAX_MESSAGE_LENGTH) : '';
+  if (!text) return res.status(400).json({ error: 'Сообщение не может быть пустым.' });
+  const rawClientId = req.body?.clientMessageId;
+  const clientMessageId = typeof rawClientId === 'string' ? rawClientId : '';
+  if (clientMessageId && !/^[a-zA-Z0-9_-]{8,80}$/.test(clientMessageId)) return res.status(400).json({ error: 'Некорректный идентификатор сообщения.' });
+  db.messages[channelId] ||= [];
+  const existing = clientMessageId ? db.messages[channelId].find(m => m.clientMessageId === clientMessageId && m.userId === req.user.id) : null;
+  if (existing) return res.json({ message: existing, duplicate: true });
+  const message = {
+    id: randomBytes(12).toString('hex'),
+    ...(clientMessageId ? { clientMessageId } : {}),
+    userId: req.user.id, user: req.user.displayName, text, time: new Date().toISOString()
+  };
+  db.messages[channelId].push(message);
+  db.messages[channelId] = db.messages[channelId].slice(-MAX_HISTORY);
+  saveDb();
+  io.to(channelId).emit('message:new', { channelId, message });
+  res.status(201).json({ message });
 });
 app.post('/api/communities', authHttp, (req, res) => {
   const name = String(req.body?.name || '').trim().slice(0, 48);
@@ -517,6 +572,33 @@ function callForUser(callId, userId) {
 
 io.on('connection', socket => {
   socket.join(`user:${socket.data.user.id}`);
+  // Opaque relay for phone-hosted Lunex nodes. The relay only forwards AES-GCM
+  // envelopes keyed by the hash of a shared room invite secret; it never needs
+  // the invite secret or plaintext message.
+  const nodeRelayLimit = createRateLimiter({ limit: 90, windowMs: 60_000 });
+  socket.on('node:join', payload => {
+    if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    for (const room of socket.rooms) {
+      if (room.startsWith('node-room:')) socket.leave(room);
+    }
+    const hashes = Array.isArray(payload?.tokenHashes) ? payload.tokenHashes.slice(0, 128) : [];
+    for (const hash of hashes) {
+      if (typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash)) socket.join(`node-room:${hash}`);
+    }
+  });
+  socket.on('node:message', payload => {
+    if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    if (!nodeRelayLimit()) { socket.emit('node:error', { error: 'Слишком много relay-пакетов.' }); return; }
+    const tokenHash = typeof payload?.tokenHash === 'string' ? payload.tokenHash : '';
+    const envelope = payload?.envelope;
+    if (!/^[a-f0-9]{64}$/.test(tokenHash) || !envelope || typeof envelope !== 'object' ||
+        envelope.encrypted !== true || envelope.keyId !== tokenHash ||
+        typeof envelope.nonce !== 'string' || typeof envelope.ciphertext !== 'string' ||
+        envelope.nonce.length > 32 || envelope.ciphertext.length > 12_000 ||
+        JSON.stringify(envelope).length > 12_500) return;
+    // Only sockets subscribed to this invitation-secret hash receive the opaque frame.
+    socket.to(`node-room:${tokenHash}`).emit('node:message', { tokenHash, envelope });
+  });
   socket.on('call:invite', payload => {
     if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
     if (!callPayloadIsValid(payload) || !['audio', 'video'].includes(payload.mode)) return;

@@ -1,15 +1,9 @@
 name: Build Lunex APK
 # Build the Android client with live REST and Socket.IO integration.
+# UI fixes: verify dark system bars and simplified local-node settings.
+# Re-trigger build after prior artifact did not include latest UI commits.
 on:
   workflow_dispatch:
-  pull_request:
-    branches: [ main, master ]
-    paths:
-      - 'app/**'
-      - 'Lunex-MVP/**'
-      - '*.gradle.kts'
-      - 'gradle.properties'
-      - '.github/workflows/build-apk.yml'
   push:
     branches: [ '**' ]
     paths:
@@ -28,6 +22,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Test backend and background delivery
+        working-directory: Lunex-MVP
+        run: |
+          npm install --no-audit --no-fund
+          npm test
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -42,4 +41,4 @@ jobs:
           name: Lunex-Android-APK
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
