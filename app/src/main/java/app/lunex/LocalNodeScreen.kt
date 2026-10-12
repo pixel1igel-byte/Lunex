@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Call
@@ -389,6 +390,14 @@ internal fun LocalNodeScreen(
                                     clipboard.setPrimaryClip(ClipData.newPlainText("Lunex invitation", uri))
                                     status = "Приглашение скопировано."
                                 }) { Icon(Icons.Default.ContentCopy, "Копировать приглашение", tint = Color(0xFFCB91FF)) }
+                                IconButton(onClick = {
+                                    val uri = "lunex://join/${room.id}?token=${invite}"
+                                    val share = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT, uri)
+                                    }
+                                    context.startActivity(Intent.createChooser(share, "Пригласить в Lunex"))
+                                }) { Icon(Icons.Default.Share, "Отправить приглашение", tint = Color(0xFFCB91FF)) }
                                 IconButton(onClick = { invite = "" }) { Icon(Icons.Default.Close, "Скрыть приглашение", tint = Color(0xFFAAA0BC)) }
                             }
                         }
