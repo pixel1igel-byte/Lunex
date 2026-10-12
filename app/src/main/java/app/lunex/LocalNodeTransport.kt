@@ -296,6 +296,7 @@ internal class LocalNodeTransport(
                 store.rememberPeer(hello.getString("nodeId"), namedPeer.serviceName, endpointOf(namedPeer))
                 main.post { onPeersChanged(peers()) }
                 store.joinRoom(roomId, roomName, token)
+                refreshInternetRelaySubscriptions()
                 store.rememberPeerRoom(hello.getString("nodeId"), roomId)
                 main.post { onPeersChanged(peers()) }
                 sync(peer, roomId)
@@ -317,7 +318,7 @@ internal class LocalNodeTransport(
         )
         store.addMessage(message)
         onMessage(message)
-        io.execute { relayToPeers(message, null) }
+        io.execute { relayToPeers(message, null); relayViaInternet(message) }
     }
 
     fun shareFile(uri: Uri, roomId: String, senderName: String, callback: (Boolean, String) -> Unit) {
@@ -508,7 +509,7 @@ internal class LocalNodeTransport(
         }
         // Relay sequentially in this worker instead of scheduling one thread-pool
         // task per historical message when a large history is synchronized.
-        newlyInserted.forEach { relayToPeers(it, peer.host) }
+        newlyInserted.forEach { relayToPeers(it, peer.host); relayViaInternet(it) }
     }
 
     private fun handle(client: Socket) {
@@ -763,7 +764,7 @@ internal class LocalNodeTransport(
                             if (inserted) {
                                 main.post { onMessage(message) }
                                 val sourceAddress = client.inetAddress
-                                io.execute { relayToPeers(message, sourceAddress) }
+                                io.execute { relayToPeers(message, sourceAddress); relayViaInternet(message) }
                             }
                             JSONObject().put("ok", true).put("ack", message.id)
                         }
