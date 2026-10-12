@@ -136,6 +136,7 @@ internal fun LocalNodeScreen(
             return@LaunchedEffect
         }
         store.room(targetRoomId)?.let { existing ->
+            store.joinRoom(targetRoomId, existing.name, token)
             transport.refreshInternetRelaySubscriptions()
             selected = existing
             rooms = store.rooms()
@@ -298,7 +299,7 @@ internal fun LocalNodeScreen(
                                     status = "Подключаю комнату через интернет-ретранслятор…"
                                     val roomNameFromLink = uri?.getQueryParameter("name")?.take(80)?.takeIf { it.isNotBlank() } ?: "Комната ${targetRoomId.take(6)}"
                                     runCatching {
-                                        store.joinRoom(targetRoomId, roomNameFromLink, token)
+                                        store.joinRoom(targetRoomId, store.room(targetRoomId)?.name ?: roomNameFromLink, token)
                                         transport.refreshInternetRelaySubscriptions()
                                         rooms = store.rooms()
                                         selected = store.room(targetRoomId)
