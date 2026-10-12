@@ -11,6 +11,9 @@ import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.core.view.WindowCompat
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyRow
@@ -70,6 +73,7 @@ private data class DirectChat(val id: String, val userId: String, val username: 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent { LunexApp() }
     }
 
@@ -360,11 +364,11 @@ private fun LunexApp() {
     }
 
     MaterialTheme(colorScheme = darkColorScheme(primary = Purple, secondary = Color(0xFFFF73D1), background = Night, surface = Panel, onBackground = White, onSurface = White)) {
-        Surface(Modifier.fillMaxSize(), color = Night) {
+        Surface(Modifier.fillMaxSize().systemBarsPadding().imePadding(), color = Night) {
             if (localMode) {
                 LocalNodeScreen(onSwitchToCloud = { localMode = false })
             } else if (token.isBlank()) {
-                Column(Modifier.fillMaxSize().padding(22.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Default.DarkMode, null, tint = Purple, modifier = Modifier.size(42.dp))
                     Text("LUNEX", fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 4.sp)
                     Text("Реальные чаты, аккаунт и история на сервере", color = Muted, fontSize = 12.sp)
