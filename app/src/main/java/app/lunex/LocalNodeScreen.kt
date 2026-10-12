@@ -52,6 +52,10 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.flow.first
+import kotlin.coroutines.resume
 import org.json.JSONObject
 import org.webrtc.PeerConnection
 import org.webrtc.VideoTrack
@@ -60,7 +64,8 @@ import org.webrtc.VideoTrack
 internal fun LocalNodeScreen(
     onSwitchToCloud: () -> Unit,
     linkedIdentity: LocalIdentity? = null,
-    initialRoomId: String? = null
+    initialRoomId: String? = null,
+    initialInvite: String? = null
 ) {
     val context = LocalContext.current
     val store = remember { LocalNodeRuntime.store(context) }
@@ -112,6 +117,59 @@ internal fun LocalNodeScreen(
         rooms = store.rooms()
         localMessages = store.messages(room.id)
         roomFiles = store.files(room.id)
+    }
+    LaunchedEffect(initialInvite, loggedIn) {
+        val rawInvite = initialInvite?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+        val inviteUri = runCatching { Uri.parse(rawInvite) }.getOrNull()
+        val token = inviteUri?.getQueryParameter("token").orEmpty()
+        val targetRoomId = inviteUri?.pathSegments?.firstOrNull().orEmpty()
+        if (inviteUri?.scheme != "lunex" || inviteUri.host != "join" || token.isBlank() || targetRoomId.isBlank()) {
+            status = "Ссылка приглашения Lunex некорректна."
+            return@LaunchedEffect
+        }
+        if (!loggedIn) {
+            status = "Войди или создай профиль — затем Lunex подключится к приглашению автоматически."
+            return@LaunchedEffect
+        }
+        store.room(targetRoomId)?.let { existing ->
+            selected = existing
+            rooms = store.rooms()
+            localMessages = store.messages(existing.id)
+            roomFiles = store.files(existing.id)
+            status = "Комната уже есть на этом устройстве."
+            return@LaunchedEffect
+        }
+        status = "Ищу устройство с этой комнатой в локальной сети…"
+        val availablePeers = withTimeoutOrNull(30_000L) {
+            kotlinx.coroutines.flow.first(kotlinx.coroutines.flow.snapshotFlow { nodeState.peers }) { it.isNotEmpty() }
+        }
+        if (availablePeers.isNullOrEmpty()) {
+            status = "Устройство не найдено. Откройте ссылку, когда оба телефона будут в одной Wi-Fi сети."
+            return@LaunchedEffect
+        }
+        var lastError = "У найденных устройств нет этой комнаты."
+        for (peer in availablePeers) {
+            val result = withTimeoutOrNull(10_000L) {
+                suspendCancellableCoroutine<Pair<Boolean, String>> { continuation ->
+                    transport.join(peer, token) { ok, message ->
+                        if (continuation.isActive) continuation.resume(ok to message)
+                    }
+                }
+            }
+            if (result?.first == true) {
+                val room = store.room(targetRoomId) ?: store.rooms().lastOrNull()
+                if (room != null) {
+                    selected = room
+                    rooms = store.rooms()
+                    localMessages = store.messages(room.id)
+                    roomFiles = store.files(room.id)
+                }
+                status = result.second
+                return@LaunchedEffect
+            }
+            lastError = result?.second ?: "Устройство не ответило вовремя."
+        }
+        status = "$lastError Проверь, что отправитель сейчас в сети и ссылка актуальна."
     }
     val callManager = remember(context, transport) {
         AndroidCallManager(
