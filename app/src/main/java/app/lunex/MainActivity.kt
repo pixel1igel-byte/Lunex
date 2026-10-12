@@ -204,6 +204,11 @@ private fun LunexApp(initialInvite: String? = null, inviteSequence: Int = 0) {
     val activeChannelRef = remember { java.util.concurrent.atomic.AtomicReference("") }
     val activeDmRef = remember { java.util.concurrent.atomic.AtomicReference("") }
     LaunchedEffect(activeChannel, activeDm) { activeChannelRef.set(activeChannel); activeDmRef.set(activeDm?.id.orEmpty()) }
+    LaunchedEffect(server, token) {
+        // Authenticated socket is only the relay transport; room contents remain
+        // encrypted with the room invitation secret before leaving this device.
+        LocalNodeRuntime.configureInternetRelay(context, server, token)
+    }
     LaunchedEffect(localMode) {
         if (!localMode) localRooms = localNodeStore.rooms()
     }
