@@ -169,6 +169,7 @@ private fun LunexApp(initialInvite: String? = null) {
     val localNodeState by LocalNodeRuntime.state.collectAsState()
     var localRooms by remember { mutableStateOf(localNodeStore.rooms()) }
     var selectedLocalRoomId by remember { mutableStateOf<String?>(null) }
+    var pendingInvite by remember { mutableStateOf(initialInvite) }
     val scope = rememberCoroutineScope()
     var server by remember { mutableStateOf(prefs.getString("server", DEFAULT_SERVER) ?: DEFAULT_SERVER) }
     var token by remember { mutableStateOf(prefs.getString("token", "") ?: "") }
@@ -206,6 +207,7 @@ private fun LunexApp(initialInvite: String? = null) {
     }
     LaunchedEffect(initialInvite) {
         if (!initialInvite.isNullOrBlank()) {
+            pendingInvite = initialInvite
             selectedLocalRoomId = runCatching { android.net.Uri.parse(initialInvite).pathSegments.firstOrNull() }.getOrNull()
             localMode = true
         }
@@ -416,7 +418,7 @@ private fun LunexApp(initialInvite: String? = null) {
     MaterialTheme(colorScheme = darkColorScheme(primary = Purple, secondary = Color(0xFFFF73D1), background = Night, surface = Panel, onBackground = White, onSurface = White)) {
         Surface(Modifier.fillMaxSize().systemBarsPadding().imePadding(), color = Night) {
             if (localMode) {
-                LocalNodeScreen(onSwitchToCloud = { localMode = false }, linkedIdentity = linkedIdentity, initialRoomId = selectedLocalRoomId, initialInvite = initialInvite)
+                LocalNodeScreen(onSwitchToCloud = { localMode = false }, linkedIdentity = linkedIdentity, initialRoomId = selectedLocalRoomId, initialInvite = pendingInvite, onInviteHandled = { pendingInvite = null })
             } else if (token.isBlank()) {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Default.DarkMode, null, tint = Purple, modifier = Modifier.size(42.dp))
