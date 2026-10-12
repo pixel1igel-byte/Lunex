@@ -82,6 +82,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         invitationLink.value = intent?.dataString
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        // Keep Android system bars visually integrated with Lunex instead of
+        // allowing a light/default navigation strip around the dark interface.
+        window.statusBarColor = android.graphics.Color.rgb(13, 11, 22)
+        window.navigationBarColor = android.graphics.Color.rgb(13, 11, 22)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
         setContent { LunexApp(initialInvite = invitationLink.value, inviteSequence = invitationSequence.intValue) }
     }
 
