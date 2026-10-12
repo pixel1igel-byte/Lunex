@@ -145,37 +145,44 @@ internal fun LocalNodeScreen(
             return@LaunchedEffect
         }
         status = "Ищу устройство с этой комнатой в локальной сети…"
-        val availablePeers = withTimeoutOrNull(30_000L) {
-            snapshotFlow { nodeState.peers }.first { it.isNotEmpty() }
-        }
-        if (availablePeers.isNullOrEmpty()) {
-            status = "Устройство не найдено. Откройте ссылку, когда оба телефона будут в одной Wi-Fi сети."
-            return@LaunchedEffect
-        }
-        var lastError = "У найденных устройств нет этой комнаты."
-        for (peer in availablePeers) {
-            val result = withTimeoutOrNull(10_000L) {
-                suspendCancellableCoroutine<Pair<Boolean, String>> { continuation ->
-                    transport.join(peer, token) { ok, message ->
-                        if (continuation.isActive) continuation.resume(ok to message)
+        val attemptedPeers = mutableSetOf<String>()
+        var lastError = "Устройство не найдено. Оба телефона должны быть в одной Wi-Fi сети."
+        var joined = false
+        withTimeoutOrNull(30_000L) {
+            while (!joined) {
+                val discovered = nodeState.peers
+                for (peer in discovered) {
+                    val peerKey = "${peer.host.hostAddress}:${peer.port}"
+                    if (!attemptedPeers.add(peerKey)) continue
+                    status = "Проверяю устройство ${peer.name}…"
+                    val result = withTimeoutOrNull(10_000L) {
+                        suspendCancellableCoroutine<Pair<Boolean, String>> { continuation ->
+                            transport.join(peer, token) { ok, message ->
+                                if (continuation.isActive) continuation.resume(ok to message)
+                            }
+                        }
                     }
+                    if (result?.first == true) {
+                        val room = store.room(targetRoomId) ?: store.rooms().lastOrNull()
+                        if (room != null) {
+                            selected = room
+                            rooms = store.rooms()
+                            localMessages = store.messages(room.id)
+                            roomFiles = store.files(room.id)
+                        }
+                        status = result.second
+                        joined = true
+                        onInviteHandled()
+                        break
+                    }
+                    lastError = result?.second ?: "Устройство не ответило вовремя."
                 }
+                if (!joined) kotlinx.coroutines.delay(750L)
             }
-            if (result?.first == true) {
-                val room = store.room(targetRoomId) ?: store.rooms().lastOrNull()
-                if (room != null) {
-                    selected = room
-                    rooms = store.rooms()
-                    localMessages = store.messages(room.id)
-                    roomFiles = store.files(room.id)
-                }
-                status = result.second
-                onInviteHandled()
-                return@LaunchedEffect
-            }
-            lastError = result?.second ?: "Устройство не ответило вовремя."
         }
-        status = "$lastError Проверь, что отправитель сейчас в сети и ссылка актуальна."
+        if (!joined) {
+            status = "$lastError Оставь Lunex открытым на обоих телефонах и нажми «Повторить»."
+        }
     }
     val callManager = remember(context, transport) {
         AndroidCallManager(
