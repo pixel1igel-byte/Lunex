@@ -156,6 +156,7 @@ private fun LunexApp() {
     val prefs = remember { context.getSharedPreferences("lunex", android.content.Context.MODE_PRIVATE) }
     val outbox = remember { OfflineOutbox(context) }
     val localNodeStore = remember(context) { LocalNodeRuntime.store(context) }
+    val localNodeState by LocalNodeRuntime.state.collectAsState()
     val scope = rememberCoroutineScope()
     var server by remember { mutableStateOf(prefs.getString("server", DEFAULT_SERVER) ?: DEFAULT_SERVER) }
     var token by remember { mutableStateOf(prefs.getString("token", "") ?: "") }
@@ -450,7 +451,11 @@ private fun LunexApp() {
                             Text("LUNEX", fontSize = 19.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
                             Text("Вошли как $currentName", color = Muted, fontSize = 12.sp)
                         }
-                        IconButton(onClick = { localMode = true }) { Icon(Icons.Default.Wifi, "Локальная сеть", tint = Purple) }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(horizontal = 4.dp)) {
+                            Text("Сеть", color = Muted, fontSize = 10.sp)
+                            Text(if (localNodeState.peers.isEmpty()) "готова" else "${localNodeState.peers.size} рядом", color = if (localNodeState.peers.isEmpty()) Muted else Purple, fontSize = 10.sp)
+                        }
+                        IconButton(onClick = { localMode = true }) { Icon(Icons.Default.Wifi, "Открыть локальную сеть", tint = Purple) }
                         IconButton(onClick = { scope.launch {
                             loading = true
                             try {
