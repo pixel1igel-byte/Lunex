@@ -57,7 +57,10 @@ import org.webrtc.PeerConnection
 import org.webrtc.VideoTrack
 
 @Composable
-internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
+internal fun LocalNodeScreen(
+    onSwitchToCloud: () -> Unit,
+    linkedIdentity: LocalIdentity? = null
+) {
     val context = LocalContext.current
     val store = remember { LocalNodeRuntime.store(context) }
     val scope = rememberCoroutineScope()
@@ -66,8 +69,8 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
     var displayName by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var isRegister by remember { mutableStateOf(true) }
-    var loggedIn by remember { mutableStateOf(false) }
-    var activeName by remember { mutableStateOf("") }
+    var loggedIn by remember { mutableStateOf(linkedIdentity != null) }
+    var activeName by remember { mutableStateOf(linkedIdentity?.displayName.orEmpty()) }
     var rooms by remember { mutableStateOf(store.rooms()) }
     var roomName by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
@@ -89,6 +92,16 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
     var localVideoTrack by remember { mutableStateOf<VideoTrack?>(null) }
     var remoteVideoTrack by remember { mutableStateOf<VideoTrack?>(null) }
     var pendingCallAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    LaunchedEffect(linkedIdentity) {
+        if (linkedIdentity != null) {
+            username = linkedIdentity.username
+            displayName = linkedIdentity.displayName
+            activeName = linkedIdentity.displayName
+            loggedIn = true
+            rooms = store.rooms()
+            status = "Единый аккаунт Lunex: локальная сеть активна на этом устройстве."
+        }
+    }
     val peers = nodeState.peers
     val transport = remember { LocalNodeRuntime.ensure(context) }
     val callManager = remember(context, transport) {
@@ -164,8 +177,9 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                 Text("Lunex", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 Text(if (loggedIn) activeName else "Личные сообщения", color = Color(0xFFAAA0BC), fontSize = 12.sp)
             }
+            IconButton(onClick = onSwitchToCloud) { Icon(Icons.Default.ArrowBack, "Вернуться к основным чатам", tint = Color(0xFFCB91FF)) }
             if (loggedIn) {
-                IconButton(onClick = { connectPanelOpen = !connectPanelOpen }) { Icon(Icons.Default.Add, "Новый чат", tint = Color(0xFFCB91FF)) }
+                IconButton(onClick = { connectPanelOpen = !connectPanelOpen }) { Icon(Icons.Default.Add, "Новая локальная комната", tint = Color(0xFFCB91FF)) }
                 IconButton(onClick = { settingsOpen = !settingsOpen }) { Icon(Icons.Default.Settings, "Настройки", tint = Color(0xFFCB91FF)) }
             }
         }
@@ -181,7 +195,7 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                     activeName = id.displayName; loggedIn = true; password = ""; rooms = store.rooms(); status = ""
                 } catch (e: Exception) { status = e.message ?: "Ошибка локального аккаунта" } } }, modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) { Text(if (isRegister) "Создать аккаунт" else "Войти") }
                 TextButton(onClick = { isRegister = !isRegister; status = "" }, modifier = Modifier.align(androidx.compose.ui.Alignment.CenterHorizontally)) { Text(if (isRegister) "Уже есть аккаунт? Войти" else "Создать аккаунт") }
-                Text("Аккаунт хранится на этом устройстве.", color = Color(0xFFAAA0BC), fontSize = 12.sp)
+                Text("Без облачного аккаунта локальный профиль хранится на этом устройстве.", color = Color(0xFFAAA0BC), fontSize = 12.sp)
             }
         } else {
             if (settingsOpen) {
