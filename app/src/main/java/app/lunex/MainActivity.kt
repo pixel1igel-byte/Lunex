@@ -48,6 +48,7 @@ import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -69,6 +70,7 @@ private data class Channel(val id: String, val name: String, val type: String)
 private data class Community(val id: String, val name: String, val channels: List<Channel>)
 private data class ChatMessage(val id: String, val user: String, val text: String, val time: String, val userId: String = "")
 private data class DirectChat(val id: String, val userId: String, val username: String, val displayName: String, val lastMessage: String)
+private data class FoundUser(val id: String, val username: String, val displayName: String)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -169,6 +171,7 @@ private fun LunexApp() {
     var dms by remember { mutableStateOf(emptyList<DirectChat>()) }
     var activeDm by remember { mutableStateOf<DirectChat?>(null) }
     var dmUsername by remember { mutableStateOf("") }
+    var userSearchResults by remember { mutableStateOf(emptyList<FoundUser>()) }
     var draft by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf("") }
@@ -178,6 +181,22 @@ private fun LunexApp() {
     val activeChannelRef = remember { java.util.concurrent.atomic.AtomicReference("") }
     val activeDmRef = remember { java.util.concurrent.atomic.AtomicReference("") }
     LaunchedEffect(activeChannel, activeDm) { activeChannelRef.set(activeChannel); activeDmRef.set(activeDm?.id.orEmpty()) }
+    LaunchedEffect(dmUsername, token, server) {
+        val query = dmUsername.trim().removePrefix("@").trim()
+        if (token.isBlank() || query.length < 2) {
+            userSearchResults = emptyList()
+        } else {
+            delay(300)
+            runCatching {
+                requestArray(server, "/api/users/search?q=${java.net.URLEncoder.encode(query, "UTF-8")}", token)
+            }.onSuccess { result ->
+                userSearchResults = (0 until result.length()).map { index ->
+                    val user = result.getJSONObject(index)
+                    FoundUser(user.optString("id"), user.optString("username"), user.optString("displayName"))
+                }
+            }.onFailure { userSearchResults = emptyList() }
+        }
+    }
     var communityDialog by remember { mutableStateOf(false) }
     var communityName by remember { mutableStateOf("") }
     var callState by remember { mutableStateOf("idle") }
@@ -469,6 +488,16 @@ private fun LunexApp() {
                                     activeDm = chat; activeChannel = ""; messages = emptyList(); socket?.emit("dm:join", chat.id); socket?.let { replayPending(it, "dm", chat.id) }; refreshDm(chat, token); dmUsername = ""; showNewDm = false
                                 } catch(e:Exception) { notice=e.message ?: "Не удалось создать чат" }
                             } }, modifier = Modifier.testTag("open-dm-submit")) { Text("Добавить") }
+                        }
+                        if (userSearchResults.isNotEmpty()) {
+                            LazyRow(contentPadding = PaddingValues(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                items(userSearchResults, key = { it.id }) { user ->
+                                    AssistChip(
+                                        onClick = { dmUsername = user.username },
+                                        label = { Text("${user.displayName} · @${user.username}") }
+                                    )
+                                }
+                            }
                         }
                         LazyRow(contentPadding = PaddingValues(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             items(dms) { d -> AssistChip(onClick = { activeDm=d; activeChannel=""; messages=emptyList(); socket?.emit("dm:join", d.id); socket?.let { replayPending(it, "dm", d.id) }; scope.launch { runCatching { refreshDm(d,token) }.onFailure { notice=it.message ?: "Ошибка загрузки" } } }, label = { Text(d.displayName.ifBlank { d.username }) }) }
