@@ -257,22 +257,28 @@ internal fun LocalNodeScreen(
             }
         } else {
             if (settingsOpen) {
-                Surface(Modifier.fillMaxWidth().heightIn(max = 390.dp).padding(horizontal = 12.dp, vertical = 6.dp), color = Color(0xFF191426), shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp)) {
-                    Column(Modifier.verticalScroll(rememberScrollState()).padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                        Text("Настройки устройства", color = Color.White, fontWeight = FontWeight.Bold)
-                        Text("ID узла: " + store.serverId(), color = Color(0xFFAAA0BC), fontSize = 11.sp)
-                        Text("TCP-порт: 45873", color = Color(0xFFAAA0BC), fontSize = 11.sp)
-                        Text(localEndpoints.joinToString("\n").ifBlank { "Адреса устройства пока недоступны" }, color = Color.White, fontSize = 11.sp)
-                        if (localEndpoints.isNotEmpty()) TextButton(onClick = {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("Lunex node endpoints", localEndpoints.joinToString("\n")))
-                            status = "Адреса устройства скопированы."
-                        }) { Icon(Icons.Default.ContentCopy, null); Text("Скопировать адреса") }
-                        Text("Подключённых устройств: ${peers.size}", color = Color(0xFFAAA0BC), fontSize = 12.sp)
-                        TextButton(onClick = { settingsOpen = false }) { Text("Готово") }
-                        TextButton(onClick = { loggedIn = false; isRegister = false; selected = null; invite = ""; settingsOpen = false }) { Text("Выйти из аккаунта", color = Color(0xFFFF8295)) }
+                AlertDialog(
+                    onDismissRequest = { settingsOpen = false },
+                    containerColor = Color(0xFF191426),
+                    title = { Text("Настройки", color = Color.White, fontWeight = FontWeight.Bold) },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text("Профиль", color = Color(0xFFCB91FF), fontWeight = FontWeight.SemiBold)
+                            Text(activeName, color = Color.White)
+                            Text("Локальная сеть работает автоматически. Технические адреса устройства скрыты.", color = Color(0xFFAAA0BC), fontSize = 13.sp)
+                            TextButton(onClick = {
+                                loggedIn = false
+                                isRegister = false
+                                selected = null
+                                invite = ""
+                                settingsOpen = false
+                            }) { Text("Выйти из аккаунта", color = Color(0xFFFF8295)) }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { settingsOpen = false }) { Text("Готово", color = Color(0xFFCB91FF)) }
                     }
-                }
+                )
             }
             if (connectPanelOpen) {
                 Surface(Modifier.fillMaxWidth().heightIn(max = 360.dp).padding(horizontal = 12.dp, vertical = 6.dp), color = Color(0xFF191426), shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp)) {
