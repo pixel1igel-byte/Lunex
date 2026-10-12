@@ -248,7 +248,6 @@ internal class LocalNodeTransport(
         if (store.addMessage(message)) {
             main.post { onMessage(message) }
             io.execute { relayToPeers(message, null); relayViaInternet(message) }
-            relayViaInternet(message)
             main.post { onStatus("Сообщение доставлено через интернет-ретранслятор.") }
         }
     }
