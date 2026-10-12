@@ -10,6 +10,8 @@ import android.os.Looper
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -168,7 +170,7 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
             }
         }
         if (!loggedIn) {
-            Column(Modifier.fillMaxSize().padding(horizontal = 22.dp), verticalArrangement = Arrangement.Center) {
+            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).imePadding().padding(horizontal = 22.dp, vertical = 18.dp), verticalArrangement = Arrangement.Center) {
                 Text(if (isRegister) "Создать аккаунт" else "С возвращением", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
                 Text("Твои чаты. Твои устройства. Твоя сеть.", color = Color(0xFFAAA0BC), fontSize = 14.sp, modifier = Modifier.padding(top = 6.dp, bottom = 22.dp))
                 OutlinedTextField(username, { username = it }, label = { Text("Логин") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -183,8 +185,8 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
             }
         } else {
             if (settingsOpen) {
-                Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), color = Color(0xFF191426), shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp)) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Surface(Modifier.fillMaxWidth().heightIn(max = 390.dp).padding(horizontal = 12.dp, vertical = 6.dp), color = Color(0xFF191426), shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp)) {
+                    Column(Modifier.verticalScroll(rememberScrollState()).padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                         Text("Настройки устройства", color = Color.White, fontWeight = FontWeight.Bold)
                         Text("ID узла: " + store.serverId(), color = Color(0xFFAAA0BC), fontSize = 11.sp)
                         Text("TCP-порт: 45873", color = Color(0xFFAAA0BC), fontSize = 11.sp)
@@ -201,8 +203,8 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                 }
             }
             if (connectPanelOpen) {
-                Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), color = Color(0xFF191426), shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp)) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Surface(Modifier.fillMaxWidth().heightIn(max = 360.dp).padding(horizontal = 12.dp, vertical = 6.dp), color = Color(0xFF191426), shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp)) {
+                    Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Новое подключение", color = Color.White, fontWeight = FontWeight.Bold)
                         OutlinedTextField(peerEndpoint, { peerEndpoint = it }, label = { Text("Адрес устройства (IP:порт)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                         OutlinedTextField(inviteToJoin, { inviteToJoin = it }, label = { Text("Код или ссылка приглашения") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -280,7 +282,7 @@ internal fun LocalNodeScreen(onSwitchToCloud: () -> Unit) {
                 }
             } else {
                 val room = selected!!
-                Column(Modifier.fillMaxSize()) {
+                Column(Modifier.weight(1f).fillMaxWidth()) {
                     Row(Modifier.fillMaxWidth().background(Color(0xFF191426)).padding(horizontal = 6.dp, vertical = 5.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                         IconButton(onClick = { selected = null; invite = "" }) { Icon(Icons.Default.ArrowBack, "Назад", tint = Color(0xFFCB91FF)) }
                         Surface(shape = androidx.compose.foundation.shape.CircleShape, color = Color(0xFF38234A), modifier = Modifier.size(40.dp)) {
