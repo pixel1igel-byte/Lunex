@@ -293,26 +293,59 @@ internal fun LocalNodeScreen(
                 Surface(Modifier.fillMaxWidth().heightIn(max = 360.dp).padding(horizontal = 12.dp, vertical = 6.dp), color = Color(0xFF191426), shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp)) {
                     Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Новое подключение", color = Color.White, fontWeight = FontWeight.Bold)
-                        OutlinedTextField(peerEndpoint, { peerEndpoint = it }, label = { Text("Адрес устройства (IP:порт)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                        OutlinedTextField(inviteToJoin, { inviteToJoin = it }, label = { Text("Код или ссылка приглашения") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                        Button(onClick = {
-                            try {
-                                val endpoint = peerEndpoint.trim()
-                                val split = endpoint.lastIndexOf(':')
-                                require(split > 0 && split < endpoint.lastIndex) { "Введи адрес в формате IP:порт." }
-                                val host = endpoint.substring(0, split).removePrefix("[").removeSuffix("]")
-                                val port = endpoint.substring(split + 1).toInt()
-                                require(port in 1..65535) { "Порт должен быть от 1 до 65535." }
-                                val peer = LanPeer("Direct $endpoint", java.net.InetAddress.getByName(host), port)
-                                val raw = inviteToJoin.trim()
-                                val token = Regex("[?&]token=([^&]+)").find(raw)?.groupValues?.get(1)?.let { java.net.URLDecoder.decode(it, "UTF-8") } ?: raw
-                                status = "Подключаюсь…"
-                                transport.join(peer, token) { ok, message ->
-                                    status = message
-                                    if (ok) { rooms = store.rooms(); selected = rooms.lastOrNull(); selected?.let { localMessages = store.messages(it.id); roomFiles = store.files(it.id) }; peerEndpoint = ""; inviteToJoin = ""; connectPanelOpen = false }
+                        OutlinedTextField(
+                            inviteToJoin,
+                            { inviteToJoin = it },
+                            label = { Text("Ссылка приглашения") },
+                            placeholder = { Text("lunex://join/…?token=…") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    val uri = runCatching { Uri.parse(inviteToJoin.trim()) }.getOrNull()
+                                    val token = uri?.getQueryParameter("token").orEmpty()
+                                    val targetRoomId = uri?.pathSegments?.firstOrNull().orEmpty()
+                                    if (uri?.scheme != "lunex" || uri.host != "join" || token.isBlank() || targetRoomId.isBlank()) {
+                                        status = "Вставь полную ссылку приглашения Lunex."
+                                        return@launch
+                                    }
+                                    status = "Ищу устройство автоматически…"
+                                    val discovered = withTimeoutOrNull(30_000L) {
+                                        snapshotFlow { nodeState.peers }.first { it.isNotEmpty() }
+                                    }
+                                    if (discovered.isNullOrEmpty()) {
+                                        status = "Устройство не найдено. Оба телефона должны быть в одной Wi-Fi сети."
+                                        return@launch
+                                    }
+                                    var lastError = "Ни одно найденное устройство не приняло приглашение."
+                                    for (peer in discovered) {
+                                        val result = withTimeoutOrNull(10_000L) {
+                                            suspendCancellableCoroutine<Pair<Boolean, String>> { continuation ->
+                                                transport.join(peer, token) { ok, message ->
+                                                    if (continuation.isActive) continuation.resume(ok to message)
+                                                }
+                                            }
+                                        }
+                                        if (result?.first == true) {
+                                            rooms = store.rooms()
+                                            selected = store.room(targetRoomId) ?: rooms.lastOrNull()
+                                            selected?.let { localMessages = store.messages(it.id); roomFiles = store.files(it.id) }
+                                            status = result.second
+                                            inviteToJoin = ""
+                                            connectPanelOpen = false
+                                            return@launch
+                                        }
+                                        lastError = result?.second ?: "Устройство не ответило."
+                                    }
+                                    status = lastError
                                 }
-                            } catch (e: Exception) { status = e.message ?: "Неверный адрес." }
-                        }, enabled = peerEndpoint.isNotBlank() && inviteToJoin.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Подключиться напрямую") }
+                            },
+                            enabled = inviteToJoin.isNotBlank(),
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Подключиться автоматически") }
+                        Text("IP-адрес вводить не нужно. Автоподключение работает, когда оба телефона доступны в одной Wi-Fi сети.", color = Color(0xFFAAA0BC), fontSize = 11.sp)
                         HorizontalDivider(color = Color(0xFF393044))
                         OutlinedTextField(roomName, { roomName = it }, label = { Text("Название новой комнаты") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                         Button(onClick = {
