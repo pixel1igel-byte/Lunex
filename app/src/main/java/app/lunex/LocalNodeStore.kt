@@ -542,8 +542,31 @@ internal class LocalNodeStore(context: Context) :
         return writableDatabase.insertWithOnConflict("node_messages", null, values, SQLiteDatabase.CONFLICT_IGNORE) != -1L
     }
 
+    /**
+     * Upgrade older plaintext local chat rows in place. This is intentionally
+     * best-effort: if Android Keystore is temporarily unavailable, leave the
+     * old row readable and retry the migration on the next history read.
+     */
+    @Synchronized
+    private fun migrateLegacyMessageBodies() {
+        val legacy = mutableListOf<Pair<String, String>>()
+        readableDatabase.rawQuery(
+            "SELECT message_id, body FROM node_messages WHERE body NOT LIKE ?",
+            arrayOf("$messageCipherPrefix%")
+        ).use { cursor ->
+            while (cursor.moveToNext()) legacy += cursor.getString(0) to cursor.getString(1)
+        }
+        for ((id, body) in legacy) {
+            runCatching {
+                val values = ContentValues().apply { put("body", protectMessageBody(body)) }
+                writableDatabase.update("node_messages", values, "message_id = ?", arrayOf(id))
+            }
+        }
+    }
+
     @Synchronized
     fun messages(roomId: String): List<LocalNodeMessage> {
+        migrateLegacyMessageBodies()
         val result = mutableListOf<LocalNodeMessage>()
         readableDatabase.rawQuery("SELECT message_id, room_id, sender_node_id, sender_name, body, created_at FROM node_messages WHERE room_id = ? ORDER BY created_at LIMIT 1000", arrayOf(roomId)).use { c ->
             while (c.moveToNext()) result += LocalNodeMessage(c.getString(0), c.getString(1), c.getString(2), c.getString(3), revealMessageBody(c.getString(4)), c.getLong(5))
