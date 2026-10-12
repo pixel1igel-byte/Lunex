@@ -360,6 +360,7 @@ private fun LunexApp() {
 
     LaunchedEffect(Unit) {
         if (token.isNotBlank()) {
+            OutboxSyncScheduler.schedule(context)
             loading = true
             try {
                 val me = request(server, "/api/me", token = token)
@@ -421,7 +422,7 @@ private fun LunexApp() {
                                 }
                                 communities.firstOrNull()?.let { c -> activeCommunity = c.id; c.channels.firstOrNull { it.type == "text" }?.let { activeChannel = it.id; activeChannelName = it.name; refreshChannel(it.id, token) } }
                                 dms = loadDms(base, token)
-                                connectSocket(token); password = ""
+                                connectSocket(token); OutboxSyncScheduler.schedule(context); password = ""
                             } catch (e: Exception) { notice = e.message ?: "Сервер недоступен" }
                             finally { loading = false }
                         }
@@ -555,6 +556,7 @@ private fun LunexApp() {
                                 }
                                 // Persist before network send so process death/offline periods cannot lose it.
                                 outbox.enqueue(PendingMessage(clientId, kind, targetId, text, System.currentTimeMillis()))
+                                OutboxSyncScheduler.schedule(context)
                                 if (s != null && s.connected()) {
                                     val payload = JSONObject().put("clientMessageId", clientId).put("text", text)
                                     if (kind == "dm") s.emit("dm:send", payload.put("conversationId", targetId))
