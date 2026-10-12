@@ -210,7 +210,7 @@ internal class LocalNodeTransport(
         }
     }
 
-    private fun refreshInternetRelaySubscriptions(socket: IoSocket? = relaySocket) {
+    fun refreshInternetRelaySubscriptions(socket: IoSocket? = relaySocket) {
         val active = socket ?: return
         if (!active.connected()) return
         val hashes = org.json.JSONArray()
