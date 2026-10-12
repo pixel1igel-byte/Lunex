@@ -146,7 +146,7 @@ internal fun LocalNodeScreen(
             return@LaunchedEffect
         }
         status = "Подключаю комнату через зашифрованный интернет-ретранслятор…"
-        val roomName = inviteUri.getQueryParameter("name")?.take(80)?.ifBlank { null } ?: "Комната ${targetRoomId.take(6)}"
+        val roomName = inviteUri.getQueryParameter("name")?.take(80)?.takeIf { it.isNotBlank() } ?: "Комната ${targetRoomId.take(6)}"
         runCatching {
             store.joinRoom(targetRoomId, roomName, token)
             transport.refreshInternetRelaySubscriptions()
@@ -296,7 +296,7 @@ internal fun LocalNodeScreen(
                                         return@launch
                                     }
                                     status = "Подключаю комнату через интернет-ретранслятор…"
-                                    val roomNameFromLink = uri?.getQueryParameter("name")?.take(80)?.ifBlank { null } ?: "Комната ${targetRoomId.take(6)}"
+                                    val roomNameFromLink = uri?.getQueryParameter("name")?.take(80)?.takeIf { it.isNotBlank() } ?: "Комната ${targetRoomId.take(6)}"
                                     runCatching {
                                         store.joinRoom(targetRoomId, roomNameFromLink, token)
                                         transport.refreshInternetRelaySubscriptions()
