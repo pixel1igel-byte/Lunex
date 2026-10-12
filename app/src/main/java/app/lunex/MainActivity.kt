@@ -76,18 +76,20 @@ private data class FoundUser(val id: String, val username: String, val displayNa
 
 class MainActivity : ComponentActivity() {
     private val invitationLink = androidx.compose.runtime.mutableStateOf<String?>(null)
+    private val invitationSequence = androidx.compose.runtime.mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         invitationLink.value = intent?.dataString
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        setContent { LunexApp(initialInvite = invitationLink.value) }
+        setContent { LunexApp(initialInvite = invitationLink.value, inviteSequence = invitationSequence.intValue) }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         invitationLink.value = intent.dataString
+        invitationSequence.intValue++
     }
 
     override fun onStart() {
@@ -161,7 +163,7 @@ private suspend fun requestArray(base: String, path: String, token: String): JSO
 }
 
 @Composable
-private fun LunexApp(initialInvite: String? = null) {
+private fun LunexApp(initialInvite: String? = null, inviteSequence: Int = 0) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = remember { context.getSharedPreferences("lunex", android.content.Context.MODE_PRIVATE) }
     val outbox = remember { OfflineOutbox(context) }
@@ -205,7 +207,7 @@ private fun LunexApp(initialInvite: String? = null) {
     LaunchedEffect(localMode) {
         if (!localMode) localRooms = localNodeStore.rooms()
     }
-    LaunchedEffect(initialInvite) {
+    LaunchedEffect(initialInvite, inviteSequence) {
         if (!initialInvite.isNullOrBlank()) {
             pendingInvite = initialInvite
             selectedLocalRoomId = runCatching { android.net.Uri.parse(initialInvite).pathSegments.firstOrNull() }.getOrNull()
