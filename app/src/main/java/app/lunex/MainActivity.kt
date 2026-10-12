@@ -1,6 +1,7 @@
 package app.lunex
 
 import android.os.Bundle
+import android.content.Intent
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.ComponentActivity
@@ -74,10 +75,19 @@ private data class DirectChat(val id: String, val userId: String, val username: 
 private data class FoundUser(val id: String, val username: String, val displayName: String)
 
 class MainActivity : ComponentActivity() {
+    private val invitationLink = androidx.compose.runtime.mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        invitationLink.value = intent?.dataString
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        setContent { LunexApp() }
+        setContent { LunexApp(initialInvite = invitationLink.value) }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        invitationLink.value = intent.dataString
     }
 
     override fun onStart() {
@@ -151,7 +161,7 @@ private suspend fun requestArray(base: String, path: String, token: String): JSO
 }
 
 @Composable
-private fun LunexApp() {
+private fun LunexApp(initialInvite: String? = null) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = remember { context.getSharedPreferences("lunex", android.content.Context.MODE_PRIVATE) }
     val outbox = remember { OfflineOutbox(context) }
@@ -193,6 +203,12 @@ private fun LunexApp() {
     LaunchedEffect(activeChannel, activeDm) { activeChannelRef.set(activeChannel); activeDmRef.set(activeDm?.id.orEmpty()) }
     LaunchedEffect(localMode) {
         if (!localMode) localRooms = localNodeStore.rooms()
+    }
+    LaunchedEffect(initialInvite) {
+        if (!initialInvite.isNullOrBlank()) {
+            selectedLocalRoomId = runCatching { android.net.Uri.parse(initialInvite).pathSegments.firstOrNull() }.getOrNull()
+            localMode = true
+        }
     }
     LaunchedEffect(dmUsername, token, server) {
         val query = dmUsername.trim().removePrefix("@").trim()
@@ -400,7 +416,7 @@ private fun LunexApp() {
     MaterialTheme(colorScheme = darkColorScheme(primary = Purple, secondary = Color(0xFFFF73D1), background = Night, surface = Panel, onBackground = White, onSurface = White)) {
         Surface(Modifier.fillMaxSize().systemBarsPadding().imePadding(), color = Night) {
             if (localMode) {
-                LocalNodeScreen(onSwitchToCloud = { localMode = false }, linkedIdentity = linkedIdentity, initialRoomId = selectedLocalRoomId)
+                LocalNodeScreen(onSwitchToCloud = { localMode = false }, linkedIdentity = linkedIdentity, initialRoomId = selectedLocalRoomId, initialInvite = initialInvite)
             } else if (token.isBlank()) {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Default.DarkMode, null, tint = Purple, modifier = Modifier.size(42.dp))
