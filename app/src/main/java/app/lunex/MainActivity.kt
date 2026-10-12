@@ -155,6 +155,7 @@ private fun LunexApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = remember { context.getSharedPreferences("lunex", android.content.Context.MODE_PRIVATE) }
     val outbox = remember { OfflineOutbox(context) }
+    val localNodeStore = remember(context) { LocalNodeRuntime.store(context) }
     val scope = rememberCoroutineScope()
     var server by remember { mutableStateOf(prefs.getString("server", DEFAULT_SERVER) ?: DEFAULT_SERVER) }
     var token by remember { mutableStateOf(prefs.getString("token", "") ?: "") }
@@ -164,6 +165,11 @@ private fun LunexApp() {
     var register by remember { mutableStateOf(true) }
     var localMode by remember { mutableStateOf(false) }
     var currentName by remember { mutableStateOf("") }
+    val linkedIdentity = remember(token, username, currentName, localNodeStore) {
+        if (token.isNotBlank() && username.isNotBlank()) {
+            LocalIdentity(localNodeStore.serverId(), username.trim().lowercase(), currentName.ifBlank { username.trim() }, 0L)
+        } else null
+    }
     var communities by remember { mutableStateOf(emptyList<Community>()) }
     var activeCommunity by remember { mutableStateOf("") }
     var activeChannel by remember { mutableStateOf("") }
@@ -365,7 +371,8 @@ private fun LunexApp() {
             loading = true
             try {
                 val me = request(server, "/api/me", token = token)
-                currentName = me.getJSONObject("user").optString("displayName")
+                username = me.getJSONObject("user").optString("username")
+                currentName = me.getJSONObject("user").optString("displayName").ifBlank { username }
                 val boot = request(server, "/api/bootstrap", token = token)
                 val arr = boot.optJSONArray("communities") ?: JSONArray()
                 communities = (0 until arr.length()).map { i ->
@@ -387,7 +394,7 @@ private fun LunexApp() {
     MaterialTheme(colorScheme = darkColorScheme(primary = Purple, secondary = Color(0xFFFF73D1), background = Night, surface = Panel, onBackground = White, onSurface = White)) {
         Surface(Modifier.fillMaxSize().systemBarsPadding().imePadding(), color = Night) {
             if (localMode) {
-                LocalNodeScreen(onSwitchToCloud = { localMode = false })
+                LocalNodeScreen(onSwitchToCloud = { localMode = false }, linkedIdentity = linkedIdentity)
             } else if (token.isBlank()) {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Default.DarkMode, null, tint = Purple, modifier = Modifier.size(42.dp))
@@ -413,6 +420,7 @@ private fun LunexApp() {
                                 val response = request(base, "/api/auth/${if (register) "register" else "login"}", "POST", body = payload)
                                 token = response.getString("token"); prefs.edit().putString("token", token).apply()
                                 currentName = responseDisplayName(response, username.trim())
+                                username = response.optJSONObject("user")?.optString("username")?.ifBlank { username.trim() } ?: username.trim()
                                 val boot = request(base, "/api/bootstrap", token = token)
                                 val arr = boot.optJSONArray("communities") ?: JSONArray()
                                 communities = (0 until arr.length()).map { i ->
