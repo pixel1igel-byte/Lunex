@@ -136,11 +136,12 @@ internal fun LocalNodeScreen(
             return@LaunchedEffect
         }
         store.room(targetRoomId)?.let { existing ->
+            transport.refreshInternetRelaySubscriptions()
             selected = existing
             rooms = store.rooms()
             localMessages = store.messages(existing.id)
             roomFiles = store.files(existing.id)
-            status = "Комната уже есть на этом устройстве."
+            status = "Комната уже есть на этом устройстве; интернет-ретранслятор обновлён."
             onInviteHandled()
             return@LaunchedEffect
         }
@@ -396,7 +397,7 @@ internal fun LocalNodeScreen(
                                     status = "Приглашение скопировано."
                                 }) { Icon(Icons.Default.ContentCopy, "Копировать приглашение", tint = Color(0xFFCB91FF)) }
                                 IconButton(onClick = {
-                                    val uri = "lunex://join/${room.id}?token=${invite}"
+                                    val uri = "lunex://join/${room.id}?token=${invite}&name=${Uri.encode(room.name)}"
                                     val share = Intent(Intent.ACTION_SEND).apply {
                                         type = "text/plain"
                                         putExtra(Intent.EXTRA_TEXT, uri)
