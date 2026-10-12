@@ -144,44 +144,20 @@ internal fun LocalNodeScreen(
             onInviteHandled()
             return@LaunchedEffect
         }
-        status = "Ищу устройство с этой комнатой в локальной сети…"
-        val attemptedPeers = mutableSetOf<String>()
-        var lastError = "Устройство не найдено. Оба телефона должны быть в одной Wi-Fi сети."
-        var joined = false
-        withTimeoutOrNull(30_000L) {
-            while (!joined) {
-                val discovered = nodeState.peers
-                for (peer in discovered) {
-                    val peerKey = "${peer.host.hostAddress}:${peer.port}"
-                    if (!attemptedPeers.add(peerKey)) continue
-                    status = "Проверяю устройство ${peer.name}…"
-                    val result = withTimeoutOrNull(10_000L) {
-                        suspendCancellableCoroutine<Pair<Boolean, String>> { continuation ->
-                            transport.join(peer, token) { ok, message ->
-                                if (continuation.isActive) continuation.resume(ok to message)
-                            }
-                        }
-                    }
-                    if (result?.first == true) {
-                        val room = store.room(targetRoomId) ?: store.rooms().lastOrNull()
-                        if (room != null) {
-                            selected = room
-                            rooms = store.rooms()
-                            localMessages = store.messages(room.id)
-                            roomFiles = store.files(room.id)
-                        }
-                        status = result.second
-                        joined = true
-                        onInviteHandled()
-                        break
-                    }
-                    lastError = result?.second ?: "Устройство не ответило вовремя."
-                }
-                if (!joined) kotlinx.coroutines.delay(750L)
-            }
-        }
-        if (!joined) {
-            status = "$lastError Оставь Lunex открытым на обоих телефонах и нажми «Повторить»."
+        status = "Подключаю комнату через зашифрованный интернет-ретранслятор…"
+        val roomName = inviteUri.getQueryParameter("name")?.take(80)?.ifBlank { null } ?: "Комната ${targetRoomId.take(6)}"
+        runCatching {
+            store.joinRoom(targetRoomId, roomName, token)
+            transport.refreshInternetRelaySubscriptions()
+            val room = store.room(targetRoomId) ?: error("Не удалось сохранить комнату.")
+            selected = room
+            rooms = store.rooms()
+            localMessages = store.messages(room.id)
+            roomFiles = store.files(room.id)
+            status = "Комната добавлена. Сообщения пойдут через интернет-ретранслятор, когда оба узла онлайн."
+            onInviteHandled()
+        }.onFailure { error ->
+            status = "Не удалось подключить приглашение: ${error.message ?: "ошибка"}"
         }
     }
     val callManager = remember(context, transport) {
@@ -318,41 +294,26 @@ internal fun LocalNodeScreen(
                                         status = "Вставь полную ссылку приглашения Lunex."
                                         return@launch
                                     }
-                                    status = "Ищу устройство автоматически…"
-                                    val discovered = withTimeoutOrNull(30_000L) {
-                                        snapshotFlow { nodeState.peers }.first { it.isNotEmpty() }
+                                    status = "Подключаю комнату через интернет-ретранслятор…"
+                                    val roomNameFromLink = uri?.getQueryParameter("name")?.take(80)?.ifBlank { null } ?: "Комната ${targetRoomId.take(6)}"
+                                    runCatching {
+                                        store.joinRoom(targetRoomId, roomNameFromLink, token)
+                                        transport.refreshInternetRelaySubscriptions()
+                                        rooms = store.rooms()
+                                        selected = store.room(targetRoomId)
+                                        selected?.let { localMessages = store.messages(it.id); roomFiles = store.files(it.id) }
+                                        status = "Комната подключена. Узлы могут общаться через интернет-ретранслятор."
+                                        inviteToJoin = ""
+                                        connectPanelOpen = false
+                                    }.onFailure { error ->
+                                        status = "Не удалось подключить приглашение: ${error.message ?: "ошибка"}"
                                     }
-                                    if (discovered.isNullOrEmpty()) {
-                                        status = "Устройство не найдено. Оба телефона должны быть в одной Wi-Fi сети."
-                                        return@launch
-                                    }
-                                    var lastError = "Ни одно найденное устройство не приняло приглашение."
-                                    for (peer in discovered) {
-                                        val result = withTimeoutOrNull(10_000L) {
-                                            suspendCancellableCoroutine<Pair<Boolean, String>> { continuation ->
-                                                transport.join(peer, token) { ok, message ->
-                                                    if (continuation.isActive) continuation.resume(ok to message)
-                                                }
-                                            }
-                                        }
-                                        if (result?.first == true) {
-                                            rooms = store.rooms()
-                                            selected = store.room(targetRoomId) ?: rooms.lastOrNull()
-                                            selected?.let { localMessages = store.messages(it.id); roomFiles = store.files(it.id) }
-                                            status = result.second
-                                            inviteToJoin = ""
-                                            connectPanelOpen = false
-                                            return@launch
-                                        }
-                                        lastError = result?.second ?: "Устройство не ответило."
-                                    }
-                                    status = lastError
                                 }
                             },
                             enabled = inviteToJoin.isNotBlank(),
                             modifier = Modifier.fillMaxWidth()
                         ) { Text("Подключиться автоматически") }
-                        Text("IP-адрес вводить не нужно. Автоподключение работает, когда оба телефона доступны в одной Wi-Fi сети.", color = Color(0xFFAAA0BC), fontSize = 11.sp)
+                        Text("Приглашение подключает комнату через интернет-ретранслятор; оба телефона должны быть онлайн и войти в аккаунт.", color = Color(0xFFAAA0BC), fontSize = 11.sp)
                         HorizontalDivider(color = Color(0xFF393044))
                         OutlinedTextField(roomName, { roomName = it }, label = { Text("Название новой комнаты") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                         Button(onClick = {
@@ -429,7 +390,7 @@ internal fun LocalNodeScreen(
                                     Text("Ссылка готова — нажми копировать", color = Color(0xFFAAA0BC), fontSize = 11.sp)
                                 }
                                 IconButton(onClick = {
-                                    val uri = "lunex://join/${room.id}?token=${invite}"
+                                    val uri = "lunex://join/${room.id}?token=${invite}&name=${Uri.encode(room.name)}"
                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                     clipboard.setPrimaryClip(ClipData.newPlainText("Lunex invitation", uri))
                                     status = "Приглашение скопировано."
