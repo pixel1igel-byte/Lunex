@@ -214,7 +214,7 @@ internal class LocalNodeTransport(
         val active = socket ?: return
         if (!active.connected()) return
         val hashes = org.json.JSONArray()
-        store.allInviteTokens().map { tokenHash(it) }.distinct().take(128).forEach(hashes::put)
+        store.allInviteTokens().map { tokenHash(it) }.distinct().take(128).forEach { hashes.put(it) }
         active.emit("node:join", JSONObject().put("tokenHashes", hashes))
     }
 
