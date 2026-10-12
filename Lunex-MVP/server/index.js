@@ -572,6 +572,33 @@ function callForUser(callId, userId) {
 
 io.on('connection', socket => {
   socket.join(`user:${socket.data.user.id}`);
+  // Opaque relay for phone-hosted Lunex nodes. The relay only forwards AES-GCM
+  // envelopes keyed by the hash of a shared room invite secret; it never needs
+  // the invite secret or plaintext message.
+  const nodeRelayLimit = createRateLimiter({ limit: 90, windowMs: 60_000 });
+  socket.on('node:join', payload => {
+    if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    for (const room of socket.rooms) {
+      if (room.startsWith('node-room:')) socket.leave(room);
+    }
+    const hashes = Array.isArray(payload?.tokenHashes) ? payload.tokenHashes.slice(0, 128) : [];
+    for (const hash of hashes) {
+      if (typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash)) socket.join(`node-room:${hash}`);
+    }
+  });
+  socket.on('node:message', payload => {
+    if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    if (!nodeRelayLimit()) { socket.emit('node:error', { error: 'Слишком много relay-пакетов.' }); return; }
+    const tokenHash = typeof payload?.tokenHash === 'string' ? payload.tokenHash : '';
+    const envelope = payload?.envelope;
+    if (!/^[a-f0-9]{64}$/.test(tokenHash) || !envelope || typeof envelope !== 'object' ||
+        envelope.encrypted !== true || envelope.keyId !== tokenHash ||
+        typeof envelope.nonce !== 'string' || typeof envelope.ciphertext !== 'string' ||
+        envelope.nonce.length > 32 || envelope.ciphertext.length > 12_000 ||
+        JSON.stringify(envelope).length > 12_500) return;
+    // Only sockets subscribed to this invitation-secret hash receive the opaque frame.
+    socket.to(`node-room:${tokenHash}`).emit('node:message', { tokenHash, envelope });
+  });
   socket.on('call:invite', payload => {
     if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
     if (!callPayloadIsValid(payload) || !['audio', 'video'].includes(payload.mode)) return;
