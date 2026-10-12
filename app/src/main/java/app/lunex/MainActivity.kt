@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.VideocamOff
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -430,6 +431,7 @@ private fun LunexApp() {
                         if (loading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp) else Text(if (register) "Создать аккаунт" else "Войти")
                     }
                     TextButton(onClick = { register = !register; notice = "" }, modifier = Modifier.testTag("toggle-register")) { Text(if (register) "Уже есть аккаунт? Войти" else "Нет аккаунта? Создать") }
+                    TextButton(onClick = { localMode = true }) { Text("Локальная сеть Wi-Fi") }
                     if (notice.isNotBlank()) Text(notice, color = Color(0xFFFF8D9B), fontSize = 12.sp)
                     Text("Регистрация: логин 3–24 символа (a–z, цифры, _), пароль от 10 символов.", color = Muted, fontSize = 11.sp)
                 }
@@ -440,6 +442,7 @@ private fun LunexApp() {
                             Text("LUNEX", fontSize = 19.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
                             Text("Вошли как $currentName", color = Muted, fontSize = 12.sp)
                         }
+                        IconButton(onClick = { localMode = true }) { Icon(Icons.Default.Wifi, "Локальная сеть", tint = Purple) }
                         IconButton(onClick = { scope.launch {
                             loading = true
                             try {
