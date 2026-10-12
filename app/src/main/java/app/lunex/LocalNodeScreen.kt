@@ -67,7 +67,8 @@ internal fun LocalNodeScreen(
     onSwitchToCloud: () -> Unit,
     linkedIdentity: LocalIdentity? = null,
     initialRoomId: String? = null,
-    initialInvite: String? = null
+    initialInvite: String? = null,
+    onInviteHandled: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val store = remember { LocalNodeRuntime.store(context) }
@@ -140,6 +141,7 @@ internal fun LocalNodeScreen(
             localMessages = store.messages(existing.id)
             roomFiles = store.files(existing.id)
             status = "Комната уже есть на этом устройстве."
+            onInviteHandled()
             return@LaunchedEffect
         }
         status = "Ищу устройство с этой комнатой в локальной сети…"
@@ -168,6 +170,7 @@ internal fun LocalNodeScreen(
                     roomFiles = store.files(room.id)
                 }
                 status = result.second
+                onInviteHandled()
                 return@LaunchedEffect
             }
             lastError = result?.second ?: "Устройство не ответило вовремя."
