@@ -59,7 +59,8 @@ import org.webrtc.VideoTrack
 @Composable
 internal fun LocalNodeScreen(
     onSwitchToCloud: () -> Unit,
-    linkedIdentity: LocalIdentity? = null
+    linkedIdentity: LocalIdentity? = null,
+    initialRoomId: String? = null
 ) {
     val context = LocalContext.current
     val store = remember { LocalNodeRuntime.store(context) }
@@ -104,6 +105,14 @@ internal fun LocalNodeScreen(
     }
     val peers = nodeState.peers
     val transport = remember { LocalNodeRuntime.ensure(context) }
+    LaunchedEffect(initialRoomId) {
+        val roomId = initialRoomId ?: return@LaunchedEffect
+        val room = store.room(roomId) ?: return@LaunchedEffect
+        selected = room
+        rooms = store.rooms()
+        localMessages = store.messages(room.id)
+        roomFiles = store.files(room.id)
+    }
     val callManager = remember(context, transport) {
         AndroidCallManager(
             context,
