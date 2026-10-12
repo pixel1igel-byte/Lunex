@@ -63,7 +63,6 @@ internal data class LocalNodeFile(
 internal class LocalNodeStore(context: Context) :
     SQLiteOpenHelper(context.applicationContext, "lunex-node.db", null, 4) {
 
-    private val appContext = context.applicationContext
     private val messageCipherPrefix = "lunex-local-v1:"
 
     /**
@@ -90,7 +89,6 @@ internal class LocalNodeStore(context: Context) :
     }
 
     private fun protectMessageBody(body: String): String {
-        if (body.startsWith(messageCipherPrefix)) return body
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, localMessageKey())
         val encrypted = cipher.doFinal(body.toByteArray(Charsets.UTF_8))
