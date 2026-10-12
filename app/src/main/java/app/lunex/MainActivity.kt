@@ -157,6 +157,8 @@ private fun LunexApp() {
     val outbox = remember { OfflineOutbox(context) }
     val localNodeStore = remember(context) { LocalNodeRuntime.store(context) }
     val localNodeState by LocalNodeRuntime.state.collectAsState()
+    var localRooms by remember { mutableStateOf(localNodeStore.rooms()) }
+    var selectedLocalRoomId by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     var server by remember { mutableStateOf(prefs.getString("server", DEFAULT_SERVER) ?: DEFAULT_SERVER) }
     var token by remember { mutableStateOf(prefs.getString("token", "") ?: "") }
@@ -189,6 +191,9 @@ private fun LunexApp() {
     val activeChannelRef = remember { java.util.concurrent.atomic.AtomicReference("") }
     val activeDmRef = remember { java.util.concurrent.atomic.AtomicReference("") }
     LaunchedEffect(activeChannel, activeDm) { activeChannelRef.set(activeChannel); activeDmRef.set(activeDm?.id.orEmpty()) }
+    LaunchedEffect(localMode) {
+        if (!localMode) localRooms = localNodeStore.rooms()
+    }
     LaunchedEffect(dmUsername, token, server) {
         val query = dmUsername.trim().removePrefix("@").trim()
         if (token.isBlank() || query.length < 2) {
@@ -395,7 +400,7 @@ private fun LunexApp() {
     MaterialTheme(colorScheme = darkColorScheme(primary = Purple, secondary = Color(0xFFFF73D1), background = Night, surface = Panel, onBackground = White, onSurface = White)) {
         Surface(Modifier.fillMaxSize().systemBarsPadding().imePadding(), color = Night) {
             if (localMode) {
-                LocalNodeScreen(onSwitchToCloud = { localMode = false }, linkedIdentity = linkedIdentity)
+                LocalNodeScreen(onSwitchToCloud = { localMode = false }, linkedIdentity = linkedIdentity, initialRoomId = selectedLocalRoomId)
             } else if (token.isBlank()) {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Default.DarkMode, null, tint = Purple, modifier = Modifier.size(42.dp))
@@ -455,7 +460,7 @@ private fun LunexApp() {
                             Text("Сеть", color = Muted, fontSize = 10.sp)
                             Text(if (localNodeState.peers.isEmpty()) "готова" else "${localNodeState.peers.size} рядом", color = if (localNodeState.peers.isEmpty()) Muted else Purple, fontSize = 10.sp)
                         }
-                        IconButton(onClick = { localMode = true }) { Icon(Icons.Default.Wifi, "Открыть локальную сеть", tint = Purple) }
+                        IconButton(onClick = { selectedLocalRoomId = null; localMode = true }) { Icon(Icons.Default.Wifi, "Открыть локальную сеть", tint = Purple) }
                         IconButton(onClick = { scope.launch {
                             loading = true
                             try {
@@ -492,6 +497,14 @@ private fun LunexApp() {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = { activeDm = null; showNewDm = false; messages = emptyList(); community?.channels?.firstOrNull { it.type == "text" }?.let { activeChannel=it.id; activeChannelName=it.name; socket?.emit("channel:join",it.id); scope.launch { runCatching { refreshChannel(it.id,token) } } } }) { Text("Каналы") }
                         OutlinedButton(onClick = { showNewDm = !showNewDm }, modifier = Modifier.testTag("open-dms")) { Text("＋ Добавить друга") }
+                    }
+                    if (localRooms.isNotEmpty()) {
+                        Text("Локальные комнаты", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(start = 14.dp, top = 4.dp))
+                        LazyRow(contentPadding = PaddingValues(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(localRooms, key = { it.id }) { room ->
+                                AssistChip(onClick = { selectedLocalRoomId = room.id; localMode = true }, label = { Text("⌁ ${room.name}") })
+                            }
+                        }
                     }
                     if (showNewDm) {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
