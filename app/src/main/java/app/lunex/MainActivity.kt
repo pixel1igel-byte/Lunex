@@ -158,8 +158,8 @@ private fun LunexApp() {
     var username by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var register by remember { mutableStateOf(false) }
-    var localMode by remember { mutableStateOf(true) }
+    var register by remember { mutableStateOf(true) }
+    var localMode by remember { mutableStateOf(false) }
     var currentName by remember { mutableStateOf("") }
     var communities by remember { mutableStateOf(emptyList<Community>()) }
     var activeCommunity by remember { mutableStateOf("") }
@@ -373,8 +373,9 @@ private fun LunexApp() {
                     Text("LUNEX", fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 4.sp)
                     Text("Реальные чаты, аккаунт и история на сервере", color = Muted, fontSize = 12.sp)
                     Spacer(Modifier.height(22.dp))
-                    OutlinedTextField(value = server, onValueChange = { server = it }, label = { Text("Адрес сервера") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("server-url"))
-                    OutlinedTextField(value = username, onValueChange = { username = it }, label = { Text("Логин") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("auth-username"))
+                    TextButton(onClick = { showServer = !showServer }) { Text(if (showServer) "Скрыть настройки подключения" else "Настройки подключения") }
+                    if (showServer) OutlinedTextField(value = server, onValueChange = { server = it }, label = { Text("Адрес сервера") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("server-url"))
+                    OutlinedTextField(value = username, onValueChange = { username = it }, label = { Text("Ник") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("auth-username"))
                     if (register) OutlinedTextField(value = displayName, onValueChange = { displayName = it }, label = { Text("Отображаемое имя") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("auth-display-name"))
                     OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Пароль (не менее 10 символов)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth().testTag("auth-password"))
                     Spacer(Modifier.height(12.dp))
@@ -454,11 +455,11 @@ private fun LunexApp() {
                     }
                     Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = { activeDm = null; showNewDm = false; messages = emptyList(); community?.channels?.firstOrNull { it.type == "text" }?.let { activeChannel=it.id; activeChannelName=it.name; socket?.emit("channel:join",it.id); scope.launch { runCatching { refreshChannel(it.id,token) } } } }) { Text("Каналы") }
-                        OutlinedButton(onClick = { showNewDm = !showNewDm }, modifier = Modifier.testTag("open-dms")) { Text("Личные сообщения") }
+                        OutlinedButton(onClick = { showNewDm = !showNewDm }, modifier = Modifier.testTag("open-dms")) { Text("＋ Добавить друга") }
                     }
                     if (showNewDm) {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                            OutlinedTextField(value = dmUsername, onValueChange = { dmUsername = it }, label = { Text("Логин собеседника") }, singleLine = true, modifier = Modifier.weight(1f).testTag("dm-username"))
+                            OutlinedTextField(value = dmUsername, onValueChange = { dmUsername = it.removePrefix("@") }, label = { Text("@ник друга") }, singleLine = true, modifier = Modifier.weight(1f).testTag("dm-username"))
                             Button(onClick = { scope.launch {
                                 try {
                                     val res = request(server, "/api/dms", "POST", token, JSONObject().put("username", dmUsername.trim().removePrefix("@")))
@@ -467,7 +468,7 @@ private fun LunexApp() {
                                     dms = loadDms(server, token).let { listOf(chat) + it.filter { d -> d.id != chat.id } }
                                     activeDm = chat; activeChannel = ""; messages = emptyList(); socket?.emit("dm:join", chat.id); socket?.let { replayPending(it, "dm", chat.id) }; refreshDm(chat, token); dmUsername = ""; showNewDm = false
                                 } catch(e:Exception) { notice=e.message ?: "Не удалось создать чат" }
-                            } }, modifier = Modifier.testTag("open-dm-submit")) { Text("Открыть") }
+                            } }, modifier = Modifier.testTag("open-dm-submit")) { Text("Добавить") }
                         }
                         LazyRow(contentPadding = PaddingValues(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             items(dms) { d -> AssistChip(onClick = { activeDm=d; activeChannel=""; messages=emptyList(); socket?.emit("dm:join", d.id); socket?.let { replayPending(it, "dm", d.id) }; scope.launch { runCatching { refreshDm(d,token) }.onFailure { notice=it.message ?: "Ошибка загрузки" } } }, label = { Text(d.displayName.ifBlank { d.username }) }) }
