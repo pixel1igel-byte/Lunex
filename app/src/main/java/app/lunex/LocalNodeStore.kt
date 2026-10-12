@@ -5,6 +5,13 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.util.Base64
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
@@ -55,6 +62,52 @@ internal data class LocalNodeFile(
  */
 internal class LocalNodeStore(context: Context) :
     SQLiteOpenHelper(context.applicationContext, "lunex-node.db", null, 4) {
+
+    private val appContext = context.applicationContext
+    private val messageCipherPrefix = "lunex-local-v1:"
+
+    /**
+     * Encrypt message bodies at rest with a non-exportable Android Keystore key.
+     * Existing plaintext rows remain readable and are encrypted the next time
+     * they are re-saved; network envelopes use their separate room-invite key.
+     */
+    private fun localMessageKey(): SecretKey {
+        val alias = "lunex.local.messages.v1"
+        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        (keyStore.getKey(alias, null) as? SecretKey)?.let { return it }
+        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+        generator.init(
+            KeyGenParameterSpec.Builder(
+                alias,
+                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setRandomizedEncryptionRequired(true)
+                .build()
+        )
+        return generator.generateKey()
+    }
+
+    private fun protectMessageBody(body: String): String {
+        if (body.startsWith(messageCipherPrefix)) return body
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, localMessageKey())
+        val encrypted = cipher.doFinal(body.toByteArray(Charsets.UTF_8))
+        val payload = cipher.iv + encrypted
+        return messageCipherPrefix + Base64.encodeToString(payload, Base64.NO_WRAP)
+    }
+
+    private fun revealMessageBody(stored: String): String {
+        if (!stored.startsWith(messageCipherPrefix)) return stored // legacy row
+        return runCatching {
+            val payload = Base64.decode(stored.removePrefix(messageCipherPrefix), Base64.NO_WRAP)
+            require(payload.size > 12) { "Некорректный зашифрованный текст." }
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, localMessageKey(), GCMParameterSpec(128, payload.copyOfRange(0, 12)))
+            String(cipher.doFinal(payload.copyOfRange(12, payload.size)), Charsets.UTF_8)
+        }.getOrElse { "[Не удалось расшифровать локальное сообщение]" }
+    }
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -486,7 +539,7 @@ internal class LocalNodeStore(context: Context) :
         val values = ContentValues().apply {
             put("message_id", message.id); put("room_id", message.roomId)
             put("sender_node_id", message.senderNodeId); put("sender_name", message.senderName)
-            put("body", message.body); put("created_at", message.createdAt); put("delivered", 1)
+            put("body", protectMessageBody(message.body)); put("created_at", message.createdAt); put("delivered", 1)
         }
         return writableDatabase.insertWithOnConflict("node_messages", null, values, SQLiteDatabase.CONFLICT_IGNORE) != -1L
     }
@@ -495,7 +548,7 @@ internal class LocalNodeStore(context: Context) :
     fun messages(roomId: String): List<LocalNodeMessage> {
         val result = mutableListOf<LocalNodeMessage>()
         readableDatabase.rawQuery("SELECT message_id, room_id, sender_node_id, sender_name, body, created_at FROM node_messages WHERE room_id = ? ORDER BY created_at LIMIT 1000", arrayOf(roomId)).use { c ->
-            while (c.moveToNext()) result += LocalNodeMessage(c.getString(0), c.getString(1), c.getString(2), c.getString(3), c.getString(4), c.getLong(5))
+            while (c.moveToNext()) result += LocalNodeMessage(c.getString(0), c.getString(1), c.getString(2), c.getString(3), revealMessageBody(c.getString(4)), c.getLong(5))
         }
         return result
     }
