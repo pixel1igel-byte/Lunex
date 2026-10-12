@@ -55,6 +55,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.flow.first
+import androidx.compose.runtime.snapshotFlow
 import kotlin.coroutines.resume
 import org.json.JSONObject
 import org.webrtc.PeerConnection
@@ -141,7 +142,7 @@ internal fun LocalNodeScreen(
         }
         status = "Ищу устройство с этой комнатой в локальной сети…"
         val availablePeers = withTimeoutOrNull(30_000L) {
-            kotlinx.coroutines.flow.first(kotlinx.coroutines.flow.snapshotFlow { nodeState.peers }) { it.isNotEmpty() }
+            snapshotFlow { nodeState.peers }.first { it.isNotEmpty() }
         }
         if (availablePeers.isNullOrEmpty()) {
             status = "Устройство не найдено. Откройте ссылку, когда оба телефона будут в одной Wi-Fi сети."
