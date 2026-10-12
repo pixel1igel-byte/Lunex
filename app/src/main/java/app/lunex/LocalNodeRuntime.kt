@@ -51,6 +51,11 @@ internal object LocalNodeRuntime {
     }
 
     @Synchronized
+    fun configureInternetRelay(context: Context, serverUrl: String, authToken: String) {
+        ensure(context).configureInternetRelay(serverUrl, authToken)
+    }
+
+    @Synchronized
     fun pause() {
         transportInstance?.stop()
         mutableState.update { it.copy(peers = emptyList(), status = "Узел приостановлен: приложение неактивно") }
