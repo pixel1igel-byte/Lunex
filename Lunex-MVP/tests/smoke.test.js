@@ -571,6 +571,12 @@ test('P-256 device-key challenge authorizes anonymous phone nodes and relays bou
   const receiverToken = await authorizeNode();
   const sender = await connectNode(senderToken);
   let receiver = await connectNode(receiverToken);
+  // Device relay credentials must not be accepted by account-only chat/call handlers.
+  sender.emit('call:invite', { callId: 'relay-must-not-call', conversationId: 'none', toUserId: 'victim', mode: 'audio' });
+  sender.emit('dm:send', { conversationId: 'none', text: 'not an account message' });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal((await fetch(base + '/api/health')).ok, true, 'relay-only events must not crash the server');
+  assert.equal(sender.connected, true, 'unauthorized cloud events must not drop the relay socket');
   const tokenHash = 'b'.repeat(64);
   sender.emit('node:join', { tokenHashes: [tokenHash] });
   receiver.emit('node:join', { tokenHashes: [tokenHash] });
