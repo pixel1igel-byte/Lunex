@@ -460,7 +460,7 @@ test('cloud-account sockets cannot impersonate device-key-authorized relay nodes
   let logs = '';
   child.stdout.on('data', chunk => { logs += chunk.toString(); });
   child.stderr.on('data', chunk => { logs += chunk.toString(); });
-  const base = \`http://127.0.0.1:\${port}\`;
+  const base = 'http://127.0.0.1:' + port;
   let socket;
   async function waitServer() {
     const deadline = Date.now() + 8000;
@@ -522,7 +522,7 @@ test('P-256 device-key challenge authorizes anonymous phone nodes and relays bou
   let logs = '';
   child.stdout.on('data', chunk => { logs += chunk.toString(); });
   child.stderr.on('data', chunk => { logs += chunk.toString(); });
-  const base = \`http://127.0.0.1:\${port}\`;
+  const base = 'http://127.0.0.1:' + port;
   const sockets = [];
   async function waitServer() {
     const deadline = Date.now() + 8000;
