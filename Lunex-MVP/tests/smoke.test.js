@@ -586,7 +586,14 @@ test('P-256 device-key challenge authorizes anonymous phone nodes and relays bou
   sender.emit('node:message', { tokenHash, envelope: second });
   await new Promise(resolve => setTimeout(resolve, 100));
   receiver = await connectNode(receiverToken);
-  const buffered = waitEvent(receiver, 'node:message');
+  const buffered = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { receiver.off('node:message', check); reject(new Error('Timed out waiting for queued envelope')); }, 2500);
+    function check(packet) {
+      if (packet?.envelope?.ciphertext !== second.ciphertext) return;
+      clearTimeout(timer); receiver.off('node:message', check); resolve(packet);
+    }
+    receiver.on('node:message', check);
+  });
   receiver.emit('node:join', { tokenHashes: [tokenHash] });
   assert.deepEqual((await buffered).envelope, second);
 });
