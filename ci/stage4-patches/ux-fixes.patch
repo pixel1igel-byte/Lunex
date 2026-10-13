@@ -1,0 +1,22 @@
+--- a/app/src/main/java/app/lunex/LocalNodeScreen.kt
++++ b/app/src/main/java/app/lunex/LocalNodeScreen.kt
+@@ -253,7 +253,7 @@
+         } else {
+             if (connectPanelOpen) {
+                 Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), color = Pal.panel, shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp)) {
+-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
++                    Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                         Text("Подключиться или создать чат", color = Color.White, fontWeight = FontWeight.Bold)
+                         Text("Вставь ссылку-приглашение от друга. Если в ссылке есть адрес устройства, вводить его не нужно.", color = Pal.muted, fontSize = 11.sp)
+                         OutlinedTextField(peerEndpoint, { peerEndpoint = it }, label = { Text("Адрес устройства друга (если нет в ссылке)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+--- a/app/src/main/java/app/lunex/LocalNodeTransport.kt
++++ b/app/src/main/java/app/lunex/LocalNodeTransport.kt
+@@ -267,7 +267,7 @@
+                         if (key.isNotBlank()) {
+                             val endpointsJson = profile.optJSONArray("endpoints")
+                             val endpoints = if (endpointsJson == null) listOf(endpointOf(peer)) else
+-                                (0 until minOf(endpointsJson.length(), 4)).map { endpointsJson.optString(it) }.filter { it.isNotBlank() }
++                                (listOf(endpointOf(peer)) + (0 until minOf(endpointsJson.length(), 4)).map { endpointsJson.optString(it) }.filter { it.isNotBlank() }).distinct().take(4)
+                             found[peerId] = ContactCard(peerId, name, key, endpoints, username)
+                         }
+                     }
