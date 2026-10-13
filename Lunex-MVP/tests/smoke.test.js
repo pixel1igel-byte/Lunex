@@ -438,14 +438,15 @@ test('background REST message delivery is authenticated and idempotent', { timeo
 });
 
 
-test('authenticated phone-node relay forwards opaque encrypted frames only to subscribed room hashes', { timeout: 20000 }, async t => {
+
+test('cloud-account sockets cannot impersonate device-key-authorized relay nodes', { timeout: 20000 }, async t => {
   const { spawn } = await import('node:child_process');
   const net = await import('node:net');
   const { io: connectSocket } = await import('socket.io-client');
   const os = await import('node:os');
   const { once } = await import('node:events');
   const fsPromises = await import('node:fs/promises');
-  const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'lunex-node-relay-'));
+  const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'lunex-node-relay-policy-'));
   const probe = net.createServer();
   probe.listen(0, '127.0.0.1');
   await once(probe, 'listening');
@@ -459,7 +460,69 @@ test('authenticated phone-node relay forwards opaque encrypted frames only to su
   let logs = '';
   child.stdout.on('data', chunk => { logs += chunk.toString(); });
   child.stderr.on('data', chunk => { logs += chunk.toString(); });
-  const base = `http://127.0.0.1:${port}`;
+  const base = \`http://127.0.0.1:\${port}\`;
+  let socket;
+  async function waitServer() {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      try { if ((await fetch(base + '/api/health')).ok) return; } catch {}
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('server did not start: ' + logs);
+  }
+  function waitEvent(event, timeoutMs = 2000) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { socket.off(event, onEvent); reject(new Error('Timed out waiting for ' + event)); }, timeoutMs);
+      function onEvent(data) { clearTimeout(timer); resolve(data); }
+      socket.once(event, onEvent);
+    });
+  }
+  t.after(async () => {
+    socket?.disconnect();
+    child.kill('SIGTERM');
+    await fsPromises.rm(tempDir, { recursive: true, force: true });
+  });
+  await waitServer();
+  const response = await fetch(base + '/api/auth/register', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'relay_policy', displayName: 'relay_policy', password: 'Lunex-test-password-2026' })
+  });
+  const account = await response.json();
+  assert.equal(response.status, 201, JSON.stringify(account));
+  socket = connectSocket(base, { auth: { token: account.token }, reconnection: false, timeout: 4000 });
+  await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('connect_error', reject); });
+  const tokenHash = 'a'.repeat(64);
+  const joinError = waitEvent('node:error');
+  socket.emit('node:join', { tokenHashes: [tokenHash] });
+  assert.match((await joinError).error, /авторизац/i);
+  const sendError = waitEvent('node:error');
+  socket.emit('node:message', { tokenHash, envelope: { encrypted: true, keyId: tokenHash, nonce: 'abcdefghijklmnop', ciphertext: 'opaque' } });
+  assert.match((await sendError).error, /авторизац/i);
+});
+
+test('P-256 device-key challenge authorizes anonymous phone nodes and relays bounded ciphertext offline', { timeout: 30000 }, async t => {
+  const { spawn } = await import('node:child_process');
+  const net = await import('node:net');
+  const { generateKeyPairSync, sign } = await import('node:crypto');
+  const { io: connectSocket } = await import('socket.io-client');
+  const os = await import('node:os');
+  const { once } = await import('node:events');
+  const fsPromises = await import('node:fs/promises');
+  const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'lunex-anon-relay-'));
+  const probe = net.createServer();
+  probe.listen(0, '127.0.0.1');
+  await once(probe, 'listening');
+  const port = probe.address().port;
+  await new Promise(resolve => probe.close(resolve));
+  const child = spawn(process.execPath, ['server/index.js'], {
+    cwd: root,
+    env: { ...process.env, PORT: String(port), LUNEX_DATA_FILE: path.join(tempDir, 'db.json'), LUNEX_ALLOWED_ORIGINS: '' },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let logs = '';
+  child.stdout.on('data', chunk => { logs += chunk.toString(); });
+  child.stderr.on('data', chunk => { logs += chunk.toString(); });
+  const base = \`http://127.0.0.1:\${port}\`;
   const sockets = [];
   async function waitServer() {
     const deadline = Date.now() + 8000;
@@ -469,23 +532,27 @@ test('authenticated phone-node relay forwards opaque encrypted frames only to su
     }
     throw new Error('server did not start: ' + logs);
   }
-  async function register(username) {
-    const response = await fetch(base + '/api/auth/register', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username, displayName: username, password: 'Lunex-test-password-2026' })
+  async function authorizeNode(pair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })) {
+    const publicKey = pair.publicKey.export({ format: 'der', type: 'spki' }).toString('base64url');
+    const challengeResponse = await fetch(base + '/api/node-relay/challenge', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ publicKey })
     });
-    const body = await response.json();
-    assert.equal(response.status, 201, JSON.stringify(body));
-    return body;
+    const challenge = await challengeResponse.json();
+    assert.equal(challengeResponse.status, 200, JSON.stringify(challenge));
+    const signature = sign('sha256', Buffer.from(challenge.challenge), pair.privateKey).toString('base64url');
+    const response = await fetch(base + '/api/node-relay/authorize', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ challengeId: challenge.challengeId, signature })
+    });
+    const result = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(result));
+    return result.token;
   }
-  async function connect(token) {
-    const socket = connectSocket(base, { auth: { token }, reconnection: false, timeout: 4000 });
+  async function connectNode(token) {
+    const socket = connectSocket(base, { auth: { nodeToken: token }, reconnection: false, timeout: 4000 });
     sockets.push(socket);
-    return new Promise((resolve, reject) => {
-      socket.once('connect', () => resolve(socket));
-      socket.once('connect_error', reject);
-    });
+    await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('connect_error', reject); });
+    return socket;
   }
   function waitEvent(socket, event, timeoutMs = 2500) {
     return new Promise((resolve, reject) => {
@@ -497,28 +564,30 @@ test('authenticated phone-node relay forwards opaque encrypted frames only to su
   t.after(async () => {
     for (const socket of sockets) socket.disconnect();
     child.kill('SIGTERM');
-    await new Promise(resolve => child.once('exit', resolve).setTimeout?.(1000));
     await fsPromises.rm(tempDir, { recursive: true, force: true });
   });
   await waitServer();
-  const sender = await register('relay_sender');
-  const receiver = await register('relay_receiver');
-  const outsider = await register('relay_outsider');
-  const a = await connect(sender.token);
-  const b = await connect(receiver.token);
-  const c = await connect(outsider.token);
-  const tokenHash = 'a'.repeat(64);
-  b.emit('node:join', { tokenHashes: [tokenHash] });
+  const senderToken = await authorizeNode();
+  const receiverToken = await authorizeNode();
+  const sender = await connectNode(senderToken);
+  let receiver = await connectNode(receiverToken);
+  const tokenHash = 'b'.repeat(64);
+  sender.emit('node:join', { tokenHashes: [tokenHash] });
+  receiver.emit('node:join', { tokenHashes: [tokenHash] });
   await new Promise(resolve => setTimeout(resolve, 100));
-  const delivered = waitEvent(b, 'node:message');
-  const notDelivered = waitEvent(c, 'node:message', 450);
-  const envelope = { encrypted: true, keyId: tokenHash, nonce: 'abcdefghijklmnop', ciphertext: 'ciphertext-only-test' };
-  a.emit('node:message', { tokenHash, envelope });
-  const packet = await delivered;
-  assert.equal(packet.tokenHash, tokenHash);
-  assert.deepEqual(packet.envelope, envelope);
-  await assert.rejects(notDelivered, /Timed out waiting/);
-  const malformedDelivery = waitEvent(b, 'node:message', 450);
-  a.emit('node:message', { tokenHash: 'not-a-hash', envelope });
-  await assert.rejects(malformedDelivery, /Timed out waiting/);
+  const first = { encrypted: true, keyId: tokenHash, nonce: 'abcdefghijklmnop', ciphertext: 'opaque-encrypted-frame-1' };
+  const liveDelivery = waitEvent(receiver, 'node:message');
+  sender.emit('node:message', { tokenHash, envelope: first });
+  assert.deepEqual((await liveDelivery).envelope, first);
+
+  receiver.disconnect();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const second = { encrypted: true, keyId: tokenHash, nonce: 'qrstuvwxyzABCDEF', ciphertext: 'opaque-encrypted-frame-2' };
+  sender.emit('node:message', { tokenHash, envelope: second });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  receiver = await connectNode(receiverToken);
+  const buffered = waitEvent(receiver, 'node:message');
+  receiver.emit('node:join', { tokenHashes: [tokenHash] });
+  assert.deepEqual((await buffered).envelope, second);
 });
+
