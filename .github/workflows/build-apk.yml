@@ -1,26 +1,24 @@
 name: Build Lunex APK
 # Build the Android client with live REST and Socket.IO integration.
+# UI fixes: verify dark system bars and simplified local-node settings.
+# Re-trigger build after prior artifact did not include latest UI commits.
 on:
   workflow_dispatch:
-  pull_request:
-    branches: [ main, master ]
-    paths:
-      - 'app/**'
-      - 'Lunex-MVP/**'
-      - '*.gradle.kts'
-      - 'gradle.properties'
-      - '.github/workflows/build-apk.yml'
   push:
     branches: [ '**' ]
     paths:
       - 'app/**'
+      - 'ci/stage4-source/**'
+      - 'ci/stage4-patches/**'
       - 'Lunex-MVP/**'
       - '*.gradle.kts'
       - 'gradle.properties'
       - '.github/workflows/build-apk.yml'
 concurrency:
-  group: lunex-apk-${{ github.ref }}
-  cancel-in-progress: true
+  # A cancelled GitHub-hosted job can remain in post-checkout cleanup; isolate each
+  # commit so the next verified build is not blocked behind stale cleanup state.
+  group: lunex-apk-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
 permissions:
   contents: read
 jobs:
@@ -28,6 +26,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Apply the exact Stage 4 Android source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat ci/stage4-source/chunk*.b64 | base64 --decode > /tmp/lunex-stage4-sources.tar.xz
+          xz -dc /tmp/lunex-stage4-sources.tar.xz | tar -xf - -C .
+          rm -f app/src/main/java/app/lunex/OutboxSyncWorker.kt
+          test -f app/src/main/java/app/lunex/NodeIdentity.kt
+          test -f app/src/main/java/app/lunex/NodeBackground.kt
+          test -f app/src/main/java/app/lunex/Theme.kt
+          # Apply the reviewed Stage 4 feature patch after extracting the immutable source snapshot.
+          base64 --decode ci/stage4-patches/profile-search.patch.gz.b64 | gzip -dc > /tmp/lunex-stage4.patch
+          patch --batch --forward -p1 < /tmp/lunex-stage4.patch
+          patch --batch --forward -p1 < ci/stage4-patches/ux-fixes.patch
+          grep -q 'fun searchUsers(queryRaw: String' app/src/main/java/app/lunex/LocalNodeTransport.kt
+          grep -q 'Сохранить профиль' app/src/main/java/app/lunex/Theme.kt
+      - name: Test backend and background delivery
+        working-directory: Lunex-MVP
+        run: |
+          npm install --no-audit --no-fund
+          npm test
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -42,4 +61,17 @@ jobs:
           name: Lunex-Android-APK
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
+
+      - name: Package exact source snapshot (including Stage 4 overlay)
+        if: always()
+        run: |
+          tar --exclude='./.git' --exclude='./.gradle' --exclude='./.kotlin' --exclude='./build' \
+            --exclude='./app/build' --exclude='./Lunex-MVP/node_modules' --exclude='./Lunex-MVP/.env' \
+            -czf /tmp/Lunex-Stage4-Source.tar.gz -C . .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Lunex-Stage4-Source
+          path: /tmp/Lunex-Stage4-Source.tar.gz
+          if-no-files-found: error
+          retention-days: 7

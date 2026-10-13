@@ -4,7 +4,7 @@ import { Server } from 'socket.io';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes, scrypt as scryptCb, timingSafeEqual, createHash, createHmac } from 'node:crypto';
+import { randomBytes, scrypt as scryptCb, timingSafeEqual, createHash, createHmac, createPublicKey, verify as verifySignature } from 'node:crypto';
 import { promisify } from 'node:util';
 import { createRateLimiter, isAllowedOrigin, isValidChannelId, parseAllowedOrigins } from './security.js';
 
@@ -16,7 +16,7 @@ const allowedOrigins = parseAllowedOrigins(process.env.LUNEX_ALLOWED_ORIGINS || 
 const io = new Server(server, {
   cors: { origin: [...allowedOrigins], credentials: false },
   allowRequest: (req, callback) => callback(null, isAllowedOrigin(req.headers.origin, allowedOrigins)),
-  maxHttpBufferSize: 16 * 1024, perMessageDeflate: false, pingInterval: 25000, pingTimeout: 20000
+  maxHttpBufferSize: 64 * 1024, perMessageDeflate: false, pingInterval: 25000, pingTimeout: 20000
 });
 const PORT = Number(process.env.PORT || 3001);
 const MAX_MESSAGE_LENGTH = 4000;
@@ -105,6 +105,108 @@ function allowAuthAttempt(req) {
   if (!authLimiters.has(key)) authLimiters.set(key, createRateLimiter({ limit: 12, windowMs: 60_000 }));
   if (authLimiters.size > 5000) authLimiters.delete(authLimiters.keys().next().value);
   return authLimiters.get(key)();
+}
+const restMessageLimiters = new Map();
+
+const nodeRelayChallenges = new Map();
+const nodeRelaySessions = new Map();
+const nodeRelayAttemptLimiters = new Map();
+const nodeRelayMailboxes = new Map();
+let nodeRelayBufferedPackets = 0;
+const NODE_RELAY_MAILBOX_TTL_MS = 24 * 60 * 60_000;
+const NODE_RELAY_MAILBOX_PER_ROOM = 50;
+const NODE_RELAY_MAILBOX_TOTAL = 1000;
+const NODE_RELAY_REPLAY_PER_SOCKET = 200;
+const NODE_RELAY_CHALLENGE_TTL_MS = 2 * 60_000;
+const NODE_RELAY_SESSION_TTL_MS = 24 * 60 * 60_000;
+function allowNodeRelayAttempt(req) {
+  const key = String(req.socket.remoteAddress || req.ip || 'unknown');
+  if (!nodeRelayAttemptLimiters.has(key)) nodeRelayAttemptLimiters.set(key, createRateLimiter({ limit: 10, windowMs: 60_000 }));
+  if (nodeRelayAttemptLimiters.size > 5000) nodeRelayAttemptLimiters.delete(nodeRelayAttemptLimiters.keys().next().value);
+  return nodeRelayAttemptLimiters.get(key)();
+}
+function pruneNodeRelayState() {
+  const now = Date.now();
+  for (const [id, entry] of nodeRelayChallenges) if (entry.expiresAt <= now) nodeRelayChallenges.delete(id);
+  for (const [hash, entry] of nodeRelaySessions) if (entry.expiresAt <= now) nodeRelaySessions.delete(hash);
+  if (nodeRelayChallenges.size > 10000) nodeRelayChallenges.clear();
+}
+function parseNodeRelayPublicKey(encoded) {
+  if (typeof encoded !== 'string' || encoded.length < 80 || encoded.length > 512 || !/^[A-Za-z0-9_-]+$/.test(encoded)) return null;
+  try {
+    const der = Buffer.from(encoded, 'base64url');
+    if (der.length < 64 || der.length > 384) return null;
+    const key = createPublicKey({ key: der, format: 'der', type: 'spki' });
+    const curve = key.asymmetricKeyDetails?.namedCurve;
+    if (key.asymmetricKeyType !== 'ec' || !['prime256v1', 'secp256r1'].includes(curve)) return null;
+    return key;
+  } catch { return null; }
+}
+function pruneNodeRelayMailboxes() {
+  const now = Date.now();
+  for (const [hash, queue] of nodeRelayMailboxes) {
+    const retained = queue.filter(item => item.expiresAt > now);
+    nodeRelayBufferedPackets -= queue.length - retained.length;
+    if (retained.length) nodeRelayMailboxes.set(hash, retained); else nodeRelayMailboxes.delete(hash);
+  }
+  while (nodeRelayBufferedPackets > NODE_RELAY_MAILBOX_TOTAL) {
+    let oldestHash = '';
+    let oldestAt = Infinity;
+    for (const [hash, queue] of nodeRelayMailboxes) {
+      if (queue[0]?.createdAt < oldestAt) { oldestAt = queue[0].createdAt; oldestHash = hash; }
+    }
+    if (!oldestHash) { nodeRelayBufferedPackets = 0; nodeRelayMailboxes.clear(); break; }
+    const queue = nodeRelayMailboxes.get(oldestHash);
+    queue.shift(); nodeRelayBufferedPackets--;
+    if (!queue.length) nodeRelayMailboxes.delete(oldestHash);
+  }
+}
+function bufferOpaqueRelayFrame(tokenHashValue, envelope) {
+  pruneNodeRelayMailboxes();
+  let queue = nodeRelayMailboxes.get(tokenHashValue);
+  if (!queue) { queue = []; nodeRelayMailboxes.set(tokenHashValue, queue); }
+  queue.push({ envelope, createdAt: Date.now(), expiresAt: Date.now() + NODE_RELAY_MAILBOX_TTL_MS });
+  nodeRelayBufferedPackets++;
+  while (queue.length > NODE_RELAY_MAILBOX_PER_ROOM) { queue.shift(); nodeRelayBufferedPackets--; }
+  pruneNodeRelayMailboxes();
+}
+app.post('/api/node-relay/challenge', (req, res) => {
+  if (!allowNodeRelayAttempt(req)) return res.status(429).json({ error: 'Слишком много попыток авторизации узла.' });
+  pruneNodeRelayState();
+  if (nodeRelayChallenges.size >= 10000) return res.status(503).json({ error: 'Сервис авторизации узлов временно перегружен.' });
+  const key = parseNodeRelayPublicKey(String(req.body?.publicKey || ''));
+  if (!key) return res.status(400).json({ error: 'Некорректный ключ узла. Требуется EC P-256.' });
+  const challengeId = randomBytes(16).toString('hex');
+  const challenge = randomBytes(32).toString('base64url');
+  const canonicalPublicKey = key.export({ format: 'der', type: 'spki' }).toString('base64url');
+  nodeRelayChallenges.set(challengeId, { challenge, key, publicKey: canonicalPublicKey, expiresAt: Date.now() + NODE_RELAY_CHALLENGE_TTL_MS });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ challengeId, challenge, expiresAt: Date.now() + NODE_RELAY_CHALLENGE_TTL_MS });
+});
+app.post('/api/node-relay/authorize', (req, res) => {
+  if (!allowNodeRelayAttempt(req)) return res.status(429).json({ error: 'Слишком много попыток авторизации узла.' });
+  pruneNodeRelayState();
+  const challengeId = String(req.body?.challengeId || '');
+  const entry = nodeRelayChallenges.get(challengeId);
+  if (entry) nodeRelayChallenges.delete(challengeId);
+  if (!entry || entry.expiresAt <= Date.now()) return res.status(401).json({ error: 'Challenge отсутствует или истёк.' });
+  const signatureText = String(req.body?.signature || '');
+  if (signatureText.length < 80 || signatureText.length > 256 || !/^[A-Za-z0-9_-]+$/.test(signatureText))
+    return res.status(401).json({ error: 'Некорректная подпись узла.' });
+  let valid = false;
+  try { valid = verifySignature('sha256', Buffer.from(entry.challenge, 'utf8'), entry.key, Buffer.from(signatureText, 'base64url')); } catch {}
+  if (!valid) return res.status(401).json({ error: 'Подпись узла не прошла проверку.' });
+  if (nodeRelaySessions.size >= 20000) return res.status(503).json({ error: 'Сервис relay-сессий временно перегружен.' });
+  const token = randomBytes(32).toString('base64url');
+  const expiresAt = Date.now() + NODE_RELAY_SESSION_TTL_MS;
+  nodeRelaySessions.set(tokenHash(token), { publicKeyHash: tokenHash(entry.publicKey), expiresAt });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ token, expiresAt });
+});
+function allowRestMessage(userId) {
+  if (!restMessageLimiters.has(userId)) restMessageLimiters.set(userId, createRateLimiter({ limit: 60, windowMs: 60_000 }));
+  if (restMessageLimiters.size > 5000) restMessageLimiters.delete(restMessageLimiters.keys().next().value);
+  return restMessageLimiters.get(userId)();
 }
 app.get('/api/call-config', authHttp, (req, res) => {
   const iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
@@ -325,6 +427,29 @@ app.get('/api/dms/:id/messages', authHttp, (req, res) => {
   if (!conversation) return res.status(404).json({ error: 'Личный чат не найден.' });
   res.json(conversation.messages.slice(-MAX_HISTORY));
 });
+app.post('/api/dms/:id/messages', authHttp, (req, res) => {
+  if (!allowRestMessage(req.user.id)) return res.status(429).json({ error: 'Слишком много сообщений. Подождите немного.' });
+  const conversation = db.dms.find(d => d.id === req.params.id && d.userIds.includes(req.user.id));
+  if (!conversation) return res.status(404).json({ error: 'Личный чат не найден.' });
+  const text = typeof req.body?.text === 'string' ? req.body.text.trim().slice(0, MAX_MESSAGE_LENGTH) : '';
+  if (!text) return res.status(400).json({ error: 'Сообщение не может быть пустым.' });
+  const rawClientId = req.body?.clientMessageId;
+  const clientMessageId = typeof rawClientId === 'string' ? rawClientId : '';
+  if (clientMessageId && !/^[a-zA-Z0-9_-]{8,80}$/.test(clientMessageId)) return res.status(400).json({ error: 'Некорректный идентификатор сообщения.' });
+  const existing = clientMessageId ? conversation.messages.find(m => m.clientMessageId === clientMessageId && m.userId === req.user.id) : null;
+  if (existing) return res.json({ message: existing, duplicate: true });
+  const message = {
+    id: randomBytes(12).toString('hex'),
+    ...(clientMessageId ? { clientMessageId } : {}),
+    userId: req.user.id, user: req.user.displayName, text, time: new Date().toISOString()
+  };
+  conversation.messages.push(message);
+  conversation.messages = conversation.messages.slice(-MAX_HISTORY);
+  saveDb();
+  const event = { conversationId: conversation.id, message };
+  for (const userId of conversation.userIds) io.to(`user:${userId}`).emit('dm:new', event);
+  res.status(201).json({ message });
+});
 
 const uploadRoot = path.join(path.dirname(DATA), 'uploads');
 const MAX_UPLOAD_SIZE = 4 * 1024 * 1024;
@@ -374,6 +499,32 @@ app.get('/api/messages/:channelId', authHttp, (req, res) => {
   if (!community || !channel) return res.status(404).json({ error: 'Канал не найден.' });
   if (!hasPermission(community, req.user.id, 'view', channel)) return res.status(403).json({ error: 'Нет доступа к этому каналу.' });
   res.json(db.messages[req.params.channelId] || []);
+});
+app.post('/api/messages/:channelId', authHttp, (req, res) => {
+  if (!allowRestMessage(req.user.id)) return res.status(429).json({ error: 'Слишком много сообщений. Подождите немного.' });
+  const channelId = String(req.params.channelId || '').slice(0, 120);
+  const community = db.communities.find(item => (item.channels || []).some(channel => channel.id === channelId));
+  const channel = community?.channels.find(item => item.id === channelId);
+  if (!community || !channel) return res.status(404).json({ error: 'Канал не найден.' });
+  if (!hasPermission(community, req.user.id, 'send', channel)) return res.status(403).json({ error: 'Нет прав отправлять сообщения в этот канал.' });
+  const text = typeof req.body?.text === 'string' ? req.body.text.trim().slice(0, MAX_MESSAGE_LENGTH) : '';
+  if (!text) return res.status(400).json({ error: 'Сообщение не может быть пустым.' });
+  const rawClientId = req.body?.clientMessageId;
+  const clientMessageId = typeof rawClientId === 'string' ? rawClientId : '';
+  if (clientMessageId && !/^[a-zA-Z0-9_-]{8,80}$/.test(clientMessageId)) return res.status(400).json({ error: 'Некорректный идентификатор сообщения.' });
+  db.messages[channelId] ||= [];
+  const existing = clientMessageId ? db.messages[channelId].find(m => m.clientMessageId === clientMessageId && m.userId === req.user.id) : null;
+  if (existing) return res.json({ message: existing, duplicate: true });
+  const message = {
+    id: randomBytes(12).toString('hex'),
+    ...(clientMessageId ? { clientMessageId } : {}),
+    userId: req.user.id, user: req.user.displayName, text, time: new Date().toISOString()
+  };
+  db.messages[channelId].push(message);
+  db.messages[channelId] = db.messages[channelId].slice(-MAX_HISTORY);
+  saveDb();
+  io.to(channelId).emit('message:new', { channelId, message });
+  res.status(201).json({ message });
 });
 app.post('/api/communities', authHttp, (req, res) => {
   const name = String(req.body?.name || '').trim().slice(0, 48);
@@ -497,13 +648,33 @@ if (fs.existsSync(path.resolve(__dirname, '../dist'))) {
 }
 io.use((socket, next) => {
   const auth = getSession(socket.handshake.auth?.token);
-  if (!auth) return next(new Error('unauthorized'));
-  socket.data.user = auth.user;
-  socket.data.sessionTokenHash = auth.session.tokenHash;
-  next();
+  if (auth) {
+    socket.data.user = auth.user;
+    socket.data.sessionTokenHash = auth.session.tokenHash;
+    socket.data.nodeRelayAuthorized = false;
+    return next();
+  }
+  const nodeToken = socket.handshake.auth?.nodeToken;
+  if (typeof nodeToken === 'string' && nodeToken.length <= 128) {
+    const hash = tokenHash(nodeToken);
+    const relaySession = nodeRelaySessions.get(hash);
+    if (relaySession && relaySession.expiresAt > Date.now()) {
+      socket.data.nodeRelayAuthorized = true;
+      socket.data.nodeRelaySessionHash = hash;
+      return next();
+    }
+  }
+  return next(new Error('unauthorized'));
 });
 function socketSessionIsValid(socket) {
+  if (socket.data.nodeRelayAuthorized) {
+    const relaySession = nodeRelaySessions.get(socket.data.nodeRelaySessionHash);
+    return !!relaySession && relaySession.expiresAt > Date.now();
+  }
   return db.sessions.some(s => s.tokenHash === socket.data.sessionTokenHash && s.expiresAt > Date.now());
+}
+function cloudSocketSessionIsValid(socket) {
+  return !socket.data.nodeRelayAuthorized && !!socket.data.user?.id && socketSessionIsValid(socket);
 }
 const activeCalls = new Map();
 function callPayloadIsValid(payload) {
@@ -516,9 +687,48 @@ function callForUser(callId, userId) {
 }
 
 io.on('connection', socket => {
-  socket.join(`user:${socket.data.user.id}`);
-  socket.on('call:invite', payload => {
+  if (socket.data.user?.id) socket.join(`user:${socket.data.user.id}`);
+  // Opaque relay for phone-hosted Lunex nodes. The relay only forwards AES-GCM
+  // envelopes keyed by the hash of a shared room invite secret; it never needs
+  // the invite secret or plaintext message.
+  const nodeRelayLimit = createRateLimiter({ limit: 360, windowMs: 60_000 });
+  socket.on('node:join', payload => {
     if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    if (!socket.data.nodeRelayAuthorized) { socket.emit('node:error', { error: 'Для relay требуется авторизация ключом устройства.' }); return; }
+    for (const room of socket.rooms) {
+      if (room.startsWith('node-room:')) socket.leave(room);
+    }
+    const hashes = Array.isArray(payload?.tokenHashes) ? payload.tokenHashes.slice(0, 128) : [];
+    pruneNodeRelayMailboxes();
+    let replayed = 0;
+    for (const hash of hashes) {
+      if (typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) continue;
+      socket.join(`node-room:${hash}`);
+      for (const item of nodeRelayMailboxes.get(hash) || []) {
+        if (replayed >= NODE_RELAY_REPLAY_PER_SOCKET) break;
+        socket.emit('node:message', { tokenHash: hash, envelope: item.envelope });
+        replayed++;
+      }
+      if (replayed >= NODE_RELAY_REPLAY_PER_SOCKET) break;
+    }
+  });
+  socket.on('node:message', payload => {
+    if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    if (!socket.data.nodeRelayAuthorized) { socket.emit('node:error', { error: 'Для relay требуется авторизация ключом устройства.' }); return; }
+    if (!nodeRelayLimit()) { socket.emit('node:error', { error: 'Слишком много relay-пакетов.' }); return; }
+    const tokenHash = typeof payload?.tokenHash === 'string' ? payload.tokenHash : '';
+    const envelope = payload?.envelope;
+    if (!/^[a-f0-9]{64}$/.test(tokenHash) || !envelope || typeof envelope !== 'object' ||
+        envelope.encrypted !== true || envelope.keyId !== tokenHash ||
+        typeof envelope.nonce !== 'string' || typeof envelope.ciphertext !== 'string' ||
+        envelope.nonce.length > 32 || envelope.ciphertext.length > 24_000 ||
+        JSON.stringify(envelope).length > 25_000) return;
+    if (!socket.rooms.has(`node-room:${tokenHash}`)) { socket.emit('node:error', { error: 'Сначала подпишись на комнату relay.' }); return; }
+    bufferOpaqueRelayFrame(tokenHash, envelope);
+    socket.to(`node-room:${tokenHash}`).emit('node:message', { tokenHash, envelope });
+  });
+  socket.on('call:invite', payload => {
+    if (!cloudSocketSessionIsValid(socket)) { if (!socketSessionIsValid(socket)) socket.disconnect(true); return; }
     if (!callPayloadIsValid(payload) || !['audio', 'video'].includes(payload.mode)) return;
     const conversation = db.dms.find(d => d.id === payload.conversationId && d.userIds.includes(socket.data.user.id));
     const targetId = String(payload.toUserId || '');
@@ -529,20 +739,20 @@ io.on('connection', socket => {
     io.to(`user:${targetId}`).emit('call:incoming', { callId: call.callId, conversationId: call.conversationId, caller: publicUser(socket.data.user), mode: call.mode, offer: payload.offer });
   });
   socket.on('call:accept', payload => {
-    if (!socketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
+    if (!cloudSocketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
     const call = callForUser(payload.callId, socket.data.user.id);
     if (!call || call.conversationId !== payload.conversationId || call.callerId === socket.data.user.id) return;
     io.to(`user:${call.callerId}`).emit('call:accepted', { callId: call.callId, conversationId: call.conversationId, answer: payload.answer });
   });
   socket.on('call:signal', payload => {
-    if (!socketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
+    if (!cloudSocketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
     const call = callForUser(payload.callId, socket.data.user.id);
     if (!call || call.conversationId !== payload.conversationId || !payload.signal || typeof payload.signal !== 'object') return;
     const targetId = call.userIds.find(id => id !== socket.data.user.id);
     io.to(`user:${targetId}`).emit('call:signal', { callId: call.callId, conversationId: call.conversationId, signal: payload.signal });
   });
   socket.on('call:reject', payload => {
-    if (!socketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
+    if (!cloudSocketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
     const call = callForUser(payload.callId, socket.data.user.id);
     if (!call || call.conversationId !== payload.conversationId) return;
     const targetId = call.userIds.find(id => id !== socket.data.user.id);
@@ -550,7 +760,7 @@ io.on('connection', socket => {
     io.to(`user:${targetId}`).emit('call:rejected', { callId: call.callId, conversationId: call.conversationId });
   });
   socket.on('call:end', payload => {
-    if (!socketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
+    if (!cloudSocketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
     const call = callForUser(payload.callId, socket.data.user.id);
     if (!call || call.conversationId !== payload.conversationId) return;
     const targetId = call.userIds.find(id => id !== socket.data.user.id);
@@ -558,6 +768,7 @@ io.on('connection', socket => {
     io.to(`user:${targetId}`).emit('call:ended', { callId: call.callId, conversationId: call.conversationId });
   });
   socket.on('disconnect', () => {
+    if (!socket.data.user?.id) return;
     for (const [callId, call] of activeCalls) {
       if (!call.userIds.includes(socket.data.user.id)) continue;
       activeCalls.delete(callId);
@@ -568,7 +779,7 @@ io.on('connection', socket => {
   const messageBurst = createRateLimiter({ limit: 20, windowMs: 10_000 });
   const messageSustained = createRateLimiter({ limit: 120, windowMs: 60_000 });
   socket.on('channel:join', channelId => {
-    if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    if (!cloudSocketSessionIsValid(socket)) { if (!socketSessionIsValid(socket)) socket.disconnect(true); return; }
     const community = db.communities.find(item => (item.channels || []).some(channel => channel.id === channelId));
     const channel = community?.channels.find(item => item.id === channelId);
     if (!community || !channel || !hasPermission(community, socket.data.user.id, 'view', channel)) return;
@@ -576,7 +787,7 @@ io.on('connection', socket => {
     socket.join(channelId);
   });
   socket.on('dm:join', conversationId => {
-    if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    if (!cloudSocketSessionIsValid(socket)) { if (!socketSessionIsValid(socket)) socket.disconnect(true); return; }
     if (typeof conversationId !== 'string' || conversationId.length > 64) return;
     const conversation = db.dms.find(d => d.id === conversationId && d.userIds.includes(socket.data.user.id));
     if (!conversation) return;
@@ -584,7 +795,7 @@ io.on('connection', socket => {
     socket.join(`dm:${conversation.id}`);
   });
   socket.on('dm:send', payload => {
-    if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    if (!cloudSocketSessionIsValid(socket)) { if (!socketSessionIsValid(socket)) socket.disconnect(true); return; }
     if (!messageBurst() || !messageSustained()) { socket.emit('message:error', { error: 'Слишком много сообщений. Подождите немного.' }); return; }
     const conversationId = String(payload?.conversationId || '').slice(0, 64);
     const text = typeof payload?.text === 'string' ? payload.text.trim().slice(0, MAX_MESSAGE_LENGTH) : '';
@@ -602,7 +813,7 @@ io.on('connection', socket => {
     if (clientMessageId) socket.emit('message:ack', { clientMessageId, message });
   });
   socket.on('message:send', payload => {
-    if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    if (!cloudSocketSessionIsValid(socket)) { if (!socketSessionIsValid(socket)) socket.disconnect(true); return; }
     if (!messageBurst() || !messageSustained()) { socket.emit('message:error', { error: 'Слишком много сообщений. Подождите немного.' }); return; }
     const channelId = String(payload?.channelId || '').slice(0, 120);
     const text = typeof payload?.text === 'string' ? payload.text.trim().slice(0, MAX_MESSAGE_LENGTH) : '';

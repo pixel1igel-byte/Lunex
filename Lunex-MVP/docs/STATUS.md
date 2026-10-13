@@ -1,25 +1,47 @@
-# Lunex release status
+# Lunex — фактический статус исходников (проверка 2026-10-12)
 
-## 1.0.0 — functional self-hosted release
+Этот документ различает наличие кода, автоматические проверки и подтверждённую работу в реальной среде. Наличие маршрута API или UI само по себе не доказывает полноценную работоспособность функции.
 
-Implemented in this release:
-- Account registration and login using scrypt password hashing.
-- Random bearer sessions; only a SHA-256 token hash is persisted, and sessions expire after 30 days.
-- Authentication required for the main API and Socket.IO connection.
-- The server uses the authenticated account identity for posted community messages instead of trusting the display name sent by a browser.
-- Authentication attempt limiting, exact origin allowlist, message size limits, per-socket message rate limiting, known-channel checks, disabled Socket.IO compression, and basic security headers.
-- Persistent community/channel messages and one-to-one private conversations in a JSON data file; responsive UI and local theme import/export.
-- Separate experimental WebRTC direct chat.
+## Web MVP (`Lunex-MVP/`)
 
-## Not implemented — do not represent these as finished
+В исходниках обнаружены:
+- регистрация и вход; пароли хэшируются через scrypt, сервер сохраняет хэш токена сессии;
+- REST API и Socket.IO с проверкой сессии;
+- личные переписки и история сообщений;
+- сообщества, приглашения, участники, роли, категории и приватные каналы;
+- загрузка вложений с проверкой доступа к личной переписке/области загрузки;
+- signaling для аудио-/видеозвонков через WebRTC и endpoint конфигурации ICE;
+- отдельная экспериментальная P2P-страница `public/direct.html`.
 
-- Main-app end-to-end encryption and cryptographically verified identities.
-- Voice/video calls, attachments, reactions, offline delivery, community roles/membership, moderation tools.
-- Onion routing/mixnet, distributed discovery/storage, or protection against IP/traffic correlation.
-- Independent penetration test or cryptographic audit.
+Это описание найденной реализации, а не подтверждение полноценного production-качества. Интеграционные сценарии, браузерная сборка и звонки требуют запуска с установленными зависимостями и проверки в реальной среде.
 
-The direct-chat page uses manually exchanged WebRTC offer/answer data and a shared passphrase. It has no configured STUN/TURN service, no offline relay, and is not a reviewed secure-messaging protocol. A direct peer may learn network address information. Community and private chats are plaintext at the application layer and server operators can read them.
+## Android (`app/`)
 
-## Verification
+В исходниках есть локальная SQLite-модель аккаунтов/комнат/сообщений, сетевой транспорт между локальными узлами, передача файлов и менеджер WebRTC-звонков. В текущей ветке также есть серверный режим Android-клиента с поиском пользователя по нику и личными чатами. Эти два режима пока не объединены в одну распределённую систему и не синхронизируют аккаунты/историю автоматически. Для серверного режима добавлена SQLite-очередь исходящих текстовых сообщений с WorkManager: отправка повторяется при появлении сети через аутентифицированные REST-маршруты с идемпотентным `clientMessageId`. Это реализовано в коде, но сборка текущего commit и проверка на двух реальных телефонах ещё обязательны. Ранее успешная сборка debug APK подтверждена GitHub Actions для commit `1e37f2697ea201498b0ac11053f2be53423603d9` (10 октября 2026 г.); она не подтверждает текущие изменения.
 
-`npm test` runs built-in Node tests without installing dependencies. `npm run build` requires npm dependencies and must be run before deployment. In this environment, dependency installation timed out, so a frontend production build has not been verified here.
+## Подтверждённые ограничения и риски
+
+- Веб-сервер хранит сообщения на прикладном уровне в JSON-файле; оператор сервера может читать содержимое. Для обычных чатов веб-MVP нельзя заявлять E2EE.
+- Сквозное шифрование (E2EE) в основных чатах Android/Web пока не реализовано; локальная экспериментальная P2P-страница не означает, что все чаты имеют E2EE.
+- Main-app end-to-end encryption is not implemented.
+- Android и Web MVP имеют разные модели аккаунтов/транспорта; синхронизация данных между ними не подтверждена и не должна подразумеваться.
+- Для Android разрешён cleartext HTTP (`usesCleartextTraffic="true"`), что облегчает LAN-соединения, но не защищает трафик при использовании незащищённого соединения вне доверенной сети.
+- Экспериментальная P2P-страница использует ручной обмен SDP и `iceServers: []`; соединения через NAT/мобильные сети ограничены, а peer может увидеть сетевые адреса.
+- Не подтверждены независимый криптографический аудит, полноценная защита от корреляции трафика, onion/mixnet-маршрутизация и гарантированная доставка, когда нет доступного сетевого пути.
+
+## Проверки, выполненные 2026-10-12
+
+- `npm test`: 9 тестов прошли, 2 интеграционных теста не запустились из-за отсутствующего пакета `socket.io-client` (зависимости не установлены).
+- `node --check Lunex-MVP/server/index.js`: прошёл.
+- `node --check Lunex-MVP/server/security.js`: прошёл.
+- `node --check Lunex-MVP/src/main.jsx`: не является поддерживаемой проверкой для расширения `.jsx` в используемом Node.js, поэтому результат не говорит о синтаксической ошибке JSX.
+- `npm install --no-audit --no-fund`: завершился по тайм-ауту; доступность реестра/установка зависимостей в этой среде не подтверждены.
+- Локальная Android-сборка не выполнялась из-за отсутствия Gradle/Wrapper и Android SDK. Отдельно подтверждён успешный GitHub Actions build debug APK для указанного выше commit; последующая сборка после обновления этого документа ожидается.
+
+## Следующие обязательные проверки перед релизом
+
+1. Установить зависимости и выполнить полный `npm test` и `npm run build`.
+2. Повторно собрать Android через Gradle 8.13/JDK 17 и проверить, что APK соответствует актуальному commit.
+3. Проверить регистрацию, личные сообщения, роли/приватные каналы, вложения и звонки интеграционными тестами.
+4. Установить APK на реальное Android-устройство и проверить работу в одной Wi-Fi сети, через разные сети, при потере соединения и после перезапуска.
+5. Не заявлять E2EE/анонимность для веб-MVP, пока это не реализовано и не проверено независимым аудитом.

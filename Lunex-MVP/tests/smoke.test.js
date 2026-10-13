@@ -344,3 +344,263 @@ test('community membership, invite limits, roles and private channel permissions
   const cannotPromotePeer = await api(member.token, `/api/communities/${community.id}/members/${owner.user.id}`, 'PATCH', { roleId: 'admin' });
   assert.equal(cannotPromotePeer.response.status, 403);
 });
+
+
+test('background REST message delivery is authenticated and idempotent', { timeout: 30000 }, async t => {
+  const { spawn } = await import('node:child_process');
+  const net = await import('node:net');
+  const os = await import('node:os');
+  const { once } = await import('node:events');
+  const fsPromises = await import('node:fs/promises');
+  const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'lunex-outbox-'));
+  const probe = net.createServer();
+  probe.listen(0, '127.0.0.1');
+  await once(probe, 'listening');
+  const port = probe.address().port;
+  await new Promise(resolve => probe.close(resolve));
+  const child = spawn(process.execPath, ['server/index.js'], {
+    cwd: root,
+    env: { ...process.env, PORT: String(port), LUNEX_DATA_FILE: path.join(tempDir, 'db.json'), LUNEX_ALLOWED_ORIGINS: '' },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let logs = '';
+  child.stdout.on('data', chunk => { logs += chunk.toString(); });
+  child.stderr.on('data', chunk => { logs += chunk.toString(); });
+  const base = `http://127.0.0.1:${port}`;
+  async function waitServer() {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      try { if ((await fetch(base + '/api/health')).ok) return; } catch {}
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('server did not start: ' + logs);
+  }
+  async function register(username) {
+    const response = await fetch(base + '/api/auth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username, displayName: username, password: 'Lunex-test-password-2026' })
+    });
+    const body = await response.json();
+    assert.equal(response.status, 201, JSON.stringify(body));
+    return body;
+  }
+  t.after(async () => {
+    child.kill('SIGTERM');
+    await Promise.race([
+      new Promise(resolve => child.once('exit', resolve)),
+      new Promise(resolve => setTimeout(resolve, 1500))
+    ]);
+    await fsPromises.rm(tempDir, { recursive: true, force: true });
+  });
+  await waitServer();
+  const alice = await register('sync_alice');
+  const bob = await register('sync_bob');
+  const mallory = await register('sync_mallory');
+  const headers = token => ({ authorization: `Bearer ${token}`, 'content-type': 'application/json' });
+
+  const dmResponse = await fetch(base + '/api/dms', {
+    method: 'POST', headers: headers(alice.token), body: JSON.stringify({ username: 'sync_bob' })
+  });
+  assert.equal(dmResponse.status, 200);
+  const dm = await dmResponse.json();
+  const dmPayload = { clientMessageId: 'background-dm-message-0001', text: 'queued while offline' };
+  const dmSend = await fetch(base + `/api/dms/${dm.id}/messages`, {
+    method: 'POST', headers: headers(alice.token), body: JSON.stringify(dmPayload)
+  });
+  assert.equal(dmSend.status, 201);
+  assert.equal((await dmSend.json()).message.text, dmPayload.text);
+  const dmRetry = await fetch(base + `/api/dms/${dm.id}/messages`, {
+    method: 'POST', headers: headers(alice.token), body: JSON.stringify(dmPayload)
+  });
+  assert.equal(dmRetry.status, 200);
+  assert.equal((await dmRetry.json()).duplicate, true);
+  const dmHistory = await fetch(base + `/api/dms/${dm.id}/messages`, { headers: headers(alice.token) });
+  assert.equal((await dmHistory.json()).filter(message => message.clientMessageId === dmPayload.clientMessageId).length, 1);
+
+  const denied = await fetch(base + `/api/dms/${dm.id}/messages`, {
+    method: 'POST', headers: headers(mallory.token), body: JSON.stringify({ clientMessageId: 'background-denied-0001', text: 'not mine' })
+  });
+  assert.equal(denied.status, 404);
+
+  const channelPayload = { clientMessageId: 'background-channel-message-01', text: 'background channel delivery' };
+  const channelSend = await fetch(base + '/api/messages/general', {
+    method: 'POST', headers: headers(alice.token), body: JSON.stringify(channelPayload)
+  });
+  assert.equal(channelSend.status, 201);
+  const channelRetry = await fetch(base + '/api/messages/general', {
+    method: 'POST', headers: headers(alice.token), body: JSON.stringify(channelPayload)
+  });
+  assert.equal(channelRetry.status, 200);
+  assert.equal((await channelRetry.json()).duplicate, true);
+  const channelHistory = await fetch(base + '/api/messages/general', { headers: headers(alice.token) });
+  assert.equal((await channelHistory.json()).filter(message => message.clientMessageId === channelPayload.clientMessageId).length, 1);
+});
+
+
+
+test('cloud-account sockets cannot impersonate device-key-authorized relay nodes', { timeout: 20000 }, async t => {
+  const { spawn } = await import('node:child_process');
+  const net = await import('node:net');
+  const { io: connectSocket } = await import('socket.io-client');
+  const os = await import('node:os');
+  const { once } = await import('node:events');
+  const fsPromises = await import('node:fs/promises');
+  const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'lunex-node-relay-policy-'));
+  const probe = net.createServer();
+  probe.listen(0, '127.0.0.1');
+  await once(probe, 'listening');
+  const port = probe.address().port;
+  await new Promise(resolve => probe.close(resolve));
+  const child = spawn(process.execPath, ['server/index.js'], {
+    cwd: root,
+    env: { ...process.env, PORT: String(port), LUNEX_DATA_FILE: path.join(tempDir, 'db.json'), LUNEX_ALLOWED_ORIGINS: '' },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let logs = '';
+  child.stdout.on('data', chunk => { logs += chunk.toString(); });
+  child.stderr.on('data', chunk => { logs += chunk.toString(); });
+  const base = 'http://127.0.0.1:' + port;
+  let socket;
+  async function waitServer() {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      try { if ((await fetch(base + '/api/health')).ok) return; } catch {}
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('server did not start: ' + logs);
+  }
+  function waitEvent(event, timeoutMs = 2000) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { socket.off(event, onEvent); reject(new Error('Timed out waiting for ' + event)); }, timeoutMs);
+      function onEvent(data) { clearTimeout(timer); resolve(data); }
+      socket.once(event, onEvent);
+    });
+  }
+  t.after(async () => {
+    socket?.disconnect();
+    child.kill('SIGTERM');
+    await fsPromises.rm(tempDir, { recursive: true, force: true });
+  });
+  await waitServer();
+  const response = await fetch(base + '/api/auth/register', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'relay_policy', displayName: 'relay_policy', password: 'Lunex-test-password-2026' })
+  });
+  const account = await response.json();
+  assert.equal(response.status, 201, JSON.stringify(account));
+  socket = connectSocket(base, { auth: { token: account.token }, reconnection: false, timeout: 4000 });
+  await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('connect_error', reject); });
+  const tokenHash = 'a'.repeat(64);
+  const joinError = waitEvent('node:error');
+  socket.emit('node:join', { tokenHashes: [tokenHash] });
+  assert.match((await joinError).error, /авторизац/i);
+  const sendError = waitEvent('node:error');
+  socket.emit('node:message', { tokenHash, envelope: { encrypted: true, keyId: tokenHash, nonce: 'abcdefghijklmnop', ciphertext: 'opaque' } });
+  assert.match((await sendError).error, /авторизац/i);
+});
+
+test('P-256 device-key challenge authorizes anonymous phone nodes and relays bounded ciphertext offline', { timeout: 30000 }, async t => {
+  const { spawn } = await import('node:child_process');
+  const net = await import('node:net');
+  const { generateKeyPairSync, sign } = await import('node:crypto');
+  const { io: connectSocket } = await import('socket.io-client');
+  const os = await import('node:os');
+  const { once } = await import('node:events');
+  const fsPromises = await import('node:fs/promises');
+  const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'lunex-anon-relay-'));
+  const probe = net.createServer();
+  probe.listen(0, '127.0.0.1');
+  await once(probe, 'listening');
+  const port = probe.address().port;
+  await new Promise(resolve => probe.close(resolve));
+  const child = spawn(process.execPath, ['server/index.js'], {
+    cwd: root,
+    env: { ...process.env, PORT: String(port), LUNEX_DATA_FILE: path.join(tempDir, 'db.json'), LUNEX_ALLOWED_ORIGINS: '' },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let logs = '';
+  child.stdout.on('data', chunk => { logs += chunk.toString(); });
+  child.stderr.on('data', chunk => { logs += chunk.toString(); });
+  const base = 'http://127.0.0.1:' + port;
+  const sockets = [];
+  async function waitServer() {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      try { if ((await fetch(base + '/api/health')).ok) return; } catch {}
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('server did not start: ' + logs);
+  }
+  async function authorizeNode(pair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })) {
+    const publicKey = pair.publicKey.export({ format: 'der', type: 'spki' }).toString('base64url');
+    const challengeResponse = await fetch(base + '/api/node-relay/challenge', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ publicKey })
+    });
+    const challenge = await challengeResponse.json();
+    assert.equal(challengeResponse.status, 200, JSON.stringify(challenge));
+    const signature = sign('sha256', Buffer.from(challenge.challenge), pair.privateKey).toString('base64url');
+    const response = await fetch(base + '/api/node-relay/authorize', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ challengeId: challenge.challengeId, signature })
+    });
+    const result = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(result));
+    return result.token;
+  }
+  async function connectNode(token) {
+    const socket = connectSocket(base, { auth: { nodeToken: token }, reconnection: false, timeout: 4000 });
+    sockets.push(socket);
+    await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('connect_error', reject); });
+    return socket;
+  }
+  function waitEvent(socket, event, timeoutMs = 2500) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { socket.off(event, onEvent); reject(new Error('Timed out waiting for ' + event)); }, timeoutMs);
+      function onEvent(data) { clearTimeout(timer); resolve(data); }
+      socket.once(event, onEvent);
+    });
+  }
+  t.after(async () => {
+    for (const socket of sockets) socket.disconnect();
+    child.kill('SIGTERM');
+    await fsPromises.rm(tempDir, { recursive: true, force: true });
+  });
+  await waitServer();
+  const senderToken = await authorizeNode();
+  const receiverToken = await authorizeNode();
+  const sender = await connectNode(senderToken);
+  let receiver = await connectNode(receiverToken);
+  // Device relay credentials must not be accepted by account-only chat/call handlers.
+  sender.emit('call:invite', { callId: 'relay-must-not-call', conversationId: 'none', toUserId: 'victim', mode: 'audio' });
+  sender.emit('dm:send', { conversationId: 'none', text: 'not an account message' });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal((await fetch(base + '/api/health')).ok, true, 'relay-only events must not crash the server');
+  assert.equal(sender.connected, true, 'unauthorized cloud events must not drop the relay socket');
+  const tokenHash = 'b'.repeat(64);
+  sender.emit('node:join', { tokenHashes: [tokenHash] });
+  receiver.emit('node:join', { tokenHashes: [tokenHash] });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const first = { encrypted: true, keyId: tokenHash, nonce: 'abcdefghijklmnop', ciphertext: 'opaque-encrypted-frame-1' };
+  const liveDelivery = waitEvent(receiver, 'node:message');
+  sender.emit('node:message', { tokenHash, envelope: first });
+  assert.deepEqual((await liveDelivery).envelope, first);
+
+  receiver.disconnect();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const second = { encrypted: true, keyId: tokenHash, nonce: 'qrstuvwxyzABCDEF', ciphertext: 'opaque-encrypted-frame-2' };
+  sender.emit('node:message', { tokenHash, envelope: second });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  receiver = await connectNode(receiverToken);
+  const buffered = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { receiver.off('node:message', check); reject(new Error('Timed out waiting for queued envelope')); }, 2500);
+    function check(packet) {
+      if (packet?.envelope?.ciphertext !== second.ciphertext) return;
+      clearTimeout(timer); receiver.off('node:message', check); resolve(packet);
+    }
+    receiver.on('node:message', check);
+  });
+  receiver.emit('node:join', { tokenHashes: [tokenHash] });
+  assert.deepEqual((await buffered).envelope, second);
+});
+

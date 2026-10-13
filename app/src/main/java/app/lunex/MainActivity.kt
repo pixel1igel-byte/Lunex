@@ -1,6 +1,7 @@
 package app.lunex
 
 import android.os.Bundle
+import android.content.Intent
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.ComponentActivity
@@ -11,6 +12,9 @@ import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.core.view.WindowCompat
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyRow
@@ -28,6 +32,7 @@ import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.VideocamOff
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -45,6 +50,7 @@ import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -66,11 +72,32 @@ private data class Channel(val id: String, val name: String, val type: String)
 private data class Community(val id: String, val name: String, val channels: List<Channel>)
 private data class ChatMessage(val id: String, val user: String, val text: String, val time: String, val userId: String = "")
 private data class DirectChat(val id: String, val userId: String, val username: String, val displayName: String, val lastMessage: String)
+private data class FoundUser(val id: String, val username: String, val displayName: String)
 
 class MainActivity : ComponentActivity() {
+    private val invitationLink = androidx.compose.runtime.mutableStateOf<String?>(null)
+    private val invitationSequence = androidx.compose.runtime.mutableIntStateOf(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { LunexApp() }
+        invitationLink.value = intent?.dataString
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        // Keep Android system bars visually integrated with Lunex instead of
+        // allowing a light/default navigation strip around the dark interface.
+        window.statusBarColor = android.graphics.Color.rgb(13, 11, 22)
+        window.navigationBarColor = android.graphics.Color.rgb(13, 11, 22)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
+        setContent { LunexApp(initialInvite = invitationLink.value, inviteSequence = invitationSequence.intValue) }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        invitationLink.value = intent.dataString
+        invitationSequence.intValue++
     }
 
     override fun onStart() {
@@ -144,19 +171,29 @@ private suspend fun requestArray(base: String, path: String, token: String): JSO
 }
 
 @Composable
-private fun LunexApp() {
+private fun LunexApp(initialInvite: String? = null, inviteSequence: Int = 0) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = remember { context.getSharedPreferences("lunex", android.content.Context.MODE_PRIVATE) }
     val outbox = remember { OfflineOutbox(context) }
+    val localNodeStore = remember(context) { LocalNodeRuntime.store(context) }
+    val localNodeState by LocalNodeRuntime.state.collectAsState()
+    var localRooms by remember { mutableStateOf(localNodeStore.rooms()) }
+    var selectedLocalRoomId by remember { mutableStateOf<String?>(null) }
+    var pendingInvite by remember { mutableStateOf(initialInvite) }
     val scope = rememberCoroutineScope()
     var server by remember { mutableStateOf(prefs.getString("server", DEFAULT_SERVER) ?: DEFAULT_SERVER) }
     var token by remember { mutableStateOf(prefs.getString("token", "") ?: "") }
     var username by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var register by remember { mutableStateOf(false) }
-    var localMode by remember { mutableStateOf(true) }
+    var register by remember { mutableStateOf(true) }
+    var localMode by remember { mutableStateOf(false) }
     var currentName by remember { mutableStateOf("") }
+    val linkedIdentity = remember(token, username, currentName, localNodeStore) {
+        if (token.isNotBlank() && username.isNotBlank()) {
+            LocalIdentity(localNodeStore.serverId(), username.trim().lowercase(), currentName.ifBlank { username.trim() }, 0L)
+        } else null
+    }
     var communities by remember { mutableStateOf(emptyList<Community>()) }
     var activeCommunity by remember { mutableStateOf("") }
     var activeChannel by remember { mutableStateOf("") }
@@ -165,6 +202,7 @@ private fun LunexApp() {
     var dms by remember { mutableStateOf(emptyList<DirectChat>()) }
     var activeDm by remember { mutableStateOf<DirectChat?>(null) }
     var dmUsername by remember { mutableStateOf("") }
+    var userSearchResults by remember { mutableStateOf(emptyList<FoundUser>()) }
     var draft by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf("") }
@@ -174,6 +212,37 @@ private fun LunexApp() {
     val activeChannelRef = remember { java.util.concurrent.atomic.AtomicReference("") }
     val activeDmRef = remember { java.util.concurrent.atomic.AtomicReference("") }
     LaunchedEffect(activeChannel, activeDm) { activeChannelRef.set(activeChannel); activeDmRef.set(activeDm?.id.orEmpty()) }
+    LaunchedEffect(server, token) {
+        // Authenticated socket is only the relay transport; room contents remain
+        // encrypted with the room invitation secret before leaving this device.
+        LocalNodeRuntime.configureInternetRelay(context, server, token)
+    }
+    LaunchedEffect(localMode) {
+        if (!localMode) localRooms = localNodeStore.rooms()
+    }
+    LaunchedEffect(initialInvite, inviteSequence) {
+        if (!initialInvite.isNullOrBlank()) {
+            pendingInvite = initialInvite
+            selectedLocalRoomId = runCatching { android.net.Uri.parse(initialInvite).pathSegments.firstOrNull() }.getOrNull()
+            localMode = true
+        }
+    }
+    LaunchedEffect(dmUsername, token, server) {
+        val query = dmUsername.trim().removePrefix("@").trim()
+        if (token.isBlank() || query.length < 2) {
+            userSearchResults = emptyList()
+        } else {
+            delay(300)
+            runCatching {
+                requestArray(server, "/api/users/search?q=${java.net.URLEncoder.encode(query, "UTF-8")}", token)
+            }.onSuccess { result ->
+                userSearchResults = (0 until result.length()).map { index ->
+                    val user = result.getJSONObject(index)
+                    FoundUser(user.optString("id"), user.optString("username"), user.optString("displayName"))
+                }
+            }.onFailure { userSearchResults = emptyList() }
+        }
+    }
     var communityDialog by remember { mutableStateOf(false) }
     var communityName by remember { mutableStateOf("") }
     var callState by remember { mutableStateOf("idle") }
@@ -337,10 +406,12 @@ private fun LunexApp() {
 
     LaunchedEffect(Unit) {
         if (token.isNotBlank()) {
+            OutboxSyncScheduler.schedule(context)
             loading = true
             try {
                 val me = request(server, "/api/me", token = token)
-                currentName = me.getJSONObject("user").optString("displayName")
+                username = me.getJSONObject("user").optString("username")
+                currentName = me.getJSONObject("user").optString("displayName").ifBlank { username }
                 val boot = request(server, "/api/bootstrap", token = token)
                 val arr = boot.optJSONArray("communities") ?: JSONArray()
                 communities = (0 until arr.length()).map { i ->
@@ -360,17 +431,18 @@ private fun LunexApp() {
     }
 
     MaterialTheme(colorScheme = darkColorScheme(primary = Purple, secondary = Color(0xFFFF73D1), background = Night, surface = Panel, onBackground = White, onSurface = White)) {
-        Surface(Modifier.fillMaxSize(), color = Night) {
+        Surface(Modifier.fillMaxSize().systemBarsPadding().imePadding(), color = Night) {
             if (localMode) {
-                LocalNodeScreen(onSwitchToCloud = { localMode = false })
+                LocalNodeScreen(onSwitchToCloud = { localMode = false }, linkedIdentity = linkedIdentity, initialRoomId = selectedLocalRoomId, initialInvite = pendingInvite, onInviteHandled = { pendingInvite = null })
             } else if (token.isBlank()) {
-                Column(Modifier.fillMaxSize().padding(22.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Default.DarkMode, null, tint = Purple, modifier = Modifier.size(42.dp))
                     Text("LUNEX", fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 4.sp)
                     Text("Реальные чаты, аккаунт и история на сервере", color = Muted, fontSize = 12.sp)
                     Spacer(Modifier.height(22.dp))
-                    OutlinedTextField(value = server, onValueChange = { server = it }, label = { Text("Адрес сервера") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("server-url"))
-                    OutlinedTextField(value = username, onValueChange = { username = it }, label = { Text("Логин") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("auth-username"))
+                    TextButton(onClick = { showServer = !showServer }) { Text(if (showServer) "Скрыть настройки подключения" else "Настройки подключения") }
+                    if (showServer) OutlinedTextField(value = server, onValueChange = { server = it }, label = { Text("Адрес сервера") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("server-url"))
+                    OutlinedTextField(value = username, onValueChange = { username = it }, label = { Text("Ник") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("auth-username"))
                     if (register) OutlinedTextField(value = displayName, onValueChange = { displayName = it }, label = { Text("Отображаемое имя") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("auth-display-name"))
                     OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Пароль (не менее 10 символов)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth().testTag("auth-password"))
                     Spacer(Modifier.height(12.dp))
@@ -387,6 +459,7 @@ private fun LunexApp() {
                                 val response = request(base, "/api/auth/${if (register) "register" else "login"}", "POST", body = payload)
                                 token = response.getString("token"); prefs.edit().putString("token", token).apply()
                                 currentName = responseDisplayName(response, username.trim())
+                                username = response.optJSONObject("user")?.optString("username")?.ifBlank { username.trim() } ?: username.trim()
                                 val boot = request(base, "/api/bootstrap", token = token)
                                 val arr = boot.optJSONArray("communities") ?: JSONArray()
                                 communities = (0 until arr.length()).map { i ->
@@ -397,7 +470,7 @@ private fun LunexApp() {
                                 }
                                 communities.firstOrNull()?.let { c -> activeCommunity = c.id; c.channels.firstOrNull { it.type == "text" }?.let { activeChannel = it.id; activeChannelName = it.name; refreshChannel(it.id, token) } }
                                 dms = loadDms(base, token)
-                                connectSocket(token); password = ""
+                                connectSocket(token); OutboxSyncScheduler.schedule(context); password = ""
                             } catch (e: Exception) { notice = e.message ?: "Сервер недоступен" }
                             finally { loading = false }
                         }
@@ -405,6 +478,7 @@ private fun LunexApp() {
                         if (loading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp) else Text(if (register) "Создать аккаунт" else "Войти")
                     }
                     TextButton(onClick = { register = !register; notice = "" }, modifier = Modifier.testTag("toggle-register")) { Text(if (register) "Уже есть аккаунт? Войти" else "Нет аккаунта? Создать") }
+                    TextButton(onClick = { localMode = true }) { Text("Локальная сеть Wi-Fi") }
                     if (notice.isNotBlank()) Text(notice, color = Color(0xFFFF8D9B), fontSize = 12.sp)
                     Text("Регистрация: логин 3–24 символа (a–z, цифры, _), пароль от 10 символов.", color = Muted, fontSize = 11.sp)
                 }
@@ -415,6 +489,11 @@ private fun LunexApp() {
                             Text("LUNEX", fontSize = 19.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
                             Text("Вошли как $currentName", color = Muted, fontSize = 12.sp)
                         }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(horizontal = 4.dp)) {
+                            Text("Сеть", color = Muted, fontSize = 10.sp)
+                            Text(if (localNodeState.peers.isEmpty()) "готова" else "${localNodeState.peers.size} рядом", color = if (localNodeState.peers.isEmpty()) Muted else Purple, fontSize = 10.sp)
+                        }
+                        IconButton(onClick = { selectedLocalRoomId = null; localMode = true }) { Icon(Icons.Default.Wifi, "Открыть локальную сеть", tint = Purple) }
                         IconButton(onClick = { scope.launch {
                             loading = true
                             try {
@@ -450,11 +529,19 @@ private fun LunexApp() {
                     }
                     Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = { activeDm = null; showNewDm = false; messages = emptyList(); community?.channels?.firstOrNull { it.type == "text" }?.let { activeChannel=it.id; activeChannelName=it.name; socket?.emit("channel:join",it.id); scope.launch { runCatching { refreshChannel(it.id,token) } } } }) { Text("Каналы") }
-                        OutlinedButton(onClick = { showNewDm = !showNewDm }, modifier = Modifier.testTag("open-dms")) { Text("Личные сообщения") }
+                        OutlinedButton(onClick = { showNewDm = !showNewDm }, modifier = Modifier.testTag("open-dms")) { Text("＋ Добавить друга") }
+                    }
+                    if (localRooms.isNotEmpty()) {
+                        Text("Локальные комнаты", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(start = 14.dp, top = 4.dp))
+                        LazyRow(contentPadding = PaddingValues(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(localRooms, key = { it.id }) { room ->
+                                AssistChip(onClick = { selectedLocalRoomId = room.id; localMode = true }, label = { Text("⌁ ${room.name}") })
+                            }
+                        }
                     }
                     if (showNewDm) {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                            OutlinedTextField(value = dmUsername, onValueChange = { dmUsername = it }, label = { Text("Логин собеседника") }, singleLine = true, modifier = Modifier.weight(1f).testTag("dm-username"))
+                            OutlinedTextField(value = dmUsername, onValueChange = { dmUsername = it.removePrefix("@") }, label = { Text("@ник друга") }, singleLine = true, modifier = Modifier.weight(1f).testTag("dm-username"))
                             Button(onClick = { scope.launch {
                                 try {
                                     val res = request(server, "/api/dms", "POST", token, JSONObject().put("username", dmUsername.trim().removePrefix("@")))
@@ -463,7 +550,17 @@ private fun LunexApp() {
                                     dms = loadDms(server, token).let { listOf(chat) + it.filter { d -> d.id != chat.id } }
                                     activeDm = chat; activeChannel = ""; messages = emptyList(); socket?.emit("dm:join", chat.id); socket?.let { replayPending(it, "dm", chat.id) }; refreshDm(chat, token); dmUsername = ""; showNewDm = false
                                 } catch(e:Exception) { notice=e.message ?: "Не удалось создать чат" }
-                            } }, modifier = Modifier.testTag("open-dm-submit")) { Text("Открыть") }
+                            } }, modifier = Modifier.testTag("open-dm-submit")) { Text("Добавить") }
+                        }
+                        if (userSearchResults.isNotEmpty()) {
+                            LazyRow(contentPadding = PaddingValues(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                items(userSearchResults, key = { it.id }) { user ->
+                                    AssistChip(
+                                        onClick = { dmUsername = user.username },
+                                        label = { Text("${user.displayName} · @${user.username}") }
+                                    )
+                                }
+                            }
                         }
                         LazyRow(contentPadding = PaddingValues(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             items(dms) { d -> AssistChip(onClick = { activeDm=d; activeChannel=""; messages=emptyList(); socket?.emit("dm:join", d.id); socket?.let { replayPending(it, "dm", d.id) }; scope.launch { runCatching { refreshDm(d,token) }.onFailure { notice=it.message ?: "Ошибка загрузки" } } }, label = { Text(d.displayName.ifBlank { d.username }) }) }
@@ -521,6 +618,7 @@ private fun LunexApp() {
                                 }
                                 // Persist before network send so process death/offline periods cannot lose it.
                                 outbox.enqueue(PendingMessage(clientId, kind, targetId, text, System.currentTimeMillis()))
+                                OutboxSyncScheduler.schedule(context)
                                 if (s != null && s.connected()) {
                                     val payload = JSONObject().put("clientMessageId", clientId).put("text", text)
                                     if (kind == "dm") s.emit("dm:send", payload.put("conversationId", targetId))

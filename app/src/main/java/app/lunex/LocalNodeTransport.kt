@@ -8,6 +8,9 @@ import android.provider.OpenableColumns
 import android.os.Handler
 import android.os.Looper
 import org.json.JSONObject
+import io.socket.client.IO
+import io.socket.client.Socket as IoSocket
+import io.socket.emitter.Emitter
 import java.io.BufferedReader
 import java.io.File
 import java.io.FileInputStream
@@ -58,6 +61,9 @@ internal class LocalNodeTransport(
     private val seenCallSignals = ConcurrentHashMap<String, Long>()
     @Volatile private var callSignalListener: ((String, JSONObject) -> Unit)? = null
     @Volatile private var running = false
+    @Volatile private var relayServerUrl = ""
+    @Volatile private var relayAuthToken = ""
+    @Volatile private var relaySocket: IoSocket? = null
     @Volatile private var server: ServerSocket? = null
     private var registration: NsdManager.RegistrationListener? = null
     private var discovery: NsdManager.DiscoveryListener? = null
@@ -93,6 +99,7 @@ internal class LocalNodeTransport(
             }
         }
         startDiscovery()
+        startInternetRelay()
         io.execute { reconnectKnownPeers() }
         maintenance.scheduleWithFixedDelay({ if (running) reconnectKnownPeers() }, 30, 30, TimeUnit.SECONDS)
         main.post { onStatus("LAN-узел запущен. Поиск устройств в этой Wi-Fi сети…") }
@@ -107,6 +114,9 @@ internal class LocalNodeTransport(
         runCatching { server?.close() }
         discovery = null
         registration = null
+        relaySocket?.disconnect()
+        relaySocket?.off()
+        relaySocket = null
         peers.clear()
         main.post { onPeersChanged(emptyList()) }
         io.shutdownNow()
@@ -148,6 +158,97 @@ internal class LocalNodeTransport(
                     if (response?.optBoolean("ok") == true) break
                 }
             }
+        }
+    }
+
+    /**
+     * Configure the authenticated Internet relay. The phone still owns its node
+     * and local SQLite data; the server only forwards encrypted room envelopes.
+     */
+    @Synchronized
+    fun configureInternetRelay(serverUrl: String, authToken: String) {
+        val normalized = serverUrl.trim().trimEnd('/')
+        if (relayServerUrl == normalized && relayAuthToken == authToken && relaySocket != null) return
+        relayServerUrl = normalized
+        relayAuthToken = authToken.trim()
+        relaySocket?.disconnect()
+        relaySocket?.off()
+        relaySocket = null
+        if (running) startInternetRelay()
+    }
+
+    private fun startInternetRelay() {
+        val url = relayServerUrl
+        val auth = relayAuthToken
+        if (!running || url.isBlank() || auth.isBlank()) return
+        runCatching {
+            val options = IO.Options.builder()
+                .setAuth(mapOf("token" to auth))
+                .setReconnection(true)
+                .setReconnectionAttempts(Int.MAX_VALUE)
+                .build()
+            val socket = IO.socket(url, options)
+            socket.on(IoSocket.EVENT_CONNECT) {
+                refreshInternetRelaySubscriptions(socket)
+                main.post { onStatus("Интернет-ретранслятор подключён; узел Lunex доступен через сеть.") }
+            }
+            socket.on("node:message", Emitter.Listener { args ->
+                val packet = args.firstOrNull() as? JSONObject ?: return@Listener
+                receiveInternetRelay(packet)
+            })
+            socket.on(IoSocket.EVENT_DISCONNECT) {
+                if (running) main.post { onStatus("Интернет-ретранслятор отключён; локальная сеть продолжает работать.") }
+            }
+            socket.on("node:error", Emitter.Listener { args ->
+                val packet = args.firstOrNull() as? JSONObject ?: return@Listener
+                main.post { onStatus(packet.optString("error", "Ошибка интернет-ретранслятора")) }
+            })
+            relaySocket = socket
+            socket.connect()
+        }.onFailure { error ->
+            main.post { onStatus("Не удалось запустить интернет-ретранслятор: ${error.message ?: "ошибка"}") }
+        }
+    }
+
+    fun refreshInternetRelaySubscriptions(socket: IoSocket? = relaySocket) {
+        val active = socket ?: return
+        if (!active.connected()) return
+        val hashes = org.json.JSONArray()
+        store.allInviteTokens().map { tokenHash(it) }.distinct().take(128).forEach { hashes.put(it) }
+        active.emit("node:join", JSONObject().put("tokenHashes", hashes))
+    }
+
+    private fun relayViaInternet(message: LocalNodeMessage) {
+        val socket = relaySocket ?: return
+        if (!socket.connected()) return
+        refreshInternetRelaySubscriptions(socket)
+        val tokens = store.inviteTokensForRoom(message.roomId)
+        for (token in tokens) {
+            val payload = JSONObject()
+                .put("op", "relay-message")
+                .put("roomId", message.roomId)
+                .put("message", message.toJson())
+            val envelope = encryptEnvelope(payload, token)
+            socket.emit("node:message", JSONObject().put("tokenHash", tokenHash(token)).put("envelope", envelope))
+        }
+    }
+
+    private fun receiveInternetRelay(packet: JSONObject) {
+        val envelope = packet.optJSONObject("envelope") ?: return
+        val keyId = envelope.optString("keyId")
+        val token = store.allInviteTokens().firstOrNull { tokenHash(it) == keyId } ?: return
+        val payload = runCatching { decryptEnvelope(envelope, token) }.getOrNull() ?: return
+        if (payload.optString("op") != "relay-message") return
+        val roomId = payload.optString("roomId")
+        if (roomId.isBlank() || store.roomForInvite(token) != roomId || store.room(roomId) == null) return
+        val messageJson = payload.optJSONObject("message") ?: return
+        val message = runCatching { LocalNodeMessage.fromJson(messageJson) }.getOrNull() ?: return
+        if (message.roomId != roomId || message.body.length > 4000 ||
+            message.id.length > 128 || message.senderName.length > 80) return
+        if (store.addMessage(message)) {
+            main.post { onMessage(message) }
+            io.execute { relayToPeers(message, null); relayViaInternet(message) }
+            main.post { onStatus("Сообщение доставлено через интернет-ретранслятор.") }
         }
     }
 
@@ -194,6 +295,7 @@ internal class LocalNodeTransport(
                 store.rememberPeer(hello.getString("nodeId"), namedPeer.serviceName, endpointOf(namedPeer))
                 main.post { onPeersChanged(peers()) }
                 store.joinRoom(roomId, roomName, token)
+                refreshInternetRelaySubscriptions()
                 store.rememberPeerRoom(hello.getString("nodeId"), roomId)
                 main.post { onPeersChanged(peers()) }
                 sync(peer, roomId)
@@ -215,7 +317,7 @@ internal class LocalNodeTransport(
         )
         store.addMessage(message)
         onMessage(message)
-        io.execute { relayToPeers(message, null) }
+        io.execute { relayToPeers(message, null); relayViaInternet(message) }
     }
 
     fun shareFile(uri: Uri, roomId: String, senderName: String, callback: (Boolean, String) -> Unit) {
@@ -406,7 +508,7 @@ internal class LocalNodeTransport(
         }
         // Relay sequentially in this worker instead of scheduling one thread-pool
         // task per historical message when a large history is synchronized.
-        newlyInserted.forEach { relayToPeers(it, peer.host) }
+        newlyInserted.forEach { relayToPeers(it, peer.host); relayViaInternet(it) }
     }
 
     private fun handle(client: Socket) {
@@ -661,7 +763,7 @@ internal class LocalNodeTransport(
                             if (inserted) {
                                 main.post { onMessage(message) }
                                 val sourceAddress = client.inetAddress
-                                io.execute { relayToPeers(message, sourceAddress) }
+                                io.execute { relayToPeers(message, sourceAddress); relayViaInternet(message) }
                             }
                             JSONObject().put("ok", true).put("ack", message.id)
                         }

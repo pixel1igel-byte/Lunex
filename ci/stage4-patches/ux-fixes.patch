@@ -1,0 +1,47 @@
+--- a/app/src/main/java/app/lunex/LocalNodeScreen.kt
++++ b/app/src/main/java/app/lunex/LocalNodeScreen.kt
+@@ -11,6 +11,7 @@
+ import android.net.Uri
+ import androidx.compose.foundation.background
+ import androidx.compose.foundation.clickable
++import androidx.compose.foundation.verticalScroll
+ import androidx.compose.foundation.layout.*
+ import androidx.compose.foundation.lazy.LazyColumn
+ import androidx.compose.foundation.lazy.items
+@@ -45,6 +46,8 @@
+ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.graphics.Color
+ import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.platform.testTag
++import androidx.compose.foundation.rememberScrollState
+ import androidx.compose.ui.text.font.FontWeight
+ import androidx.compose.ui.text.input.KeyboardType
+ import androidx.compose.ui.text.input.PasswordVisualTransformation
+@@ -253,7 +256,7 @@
+         } else {
+             if (connectPanelOpen) {
+                 Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), color = Pal.panel, shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp)) {
+-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
++                    Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                         Text("Подключиться или создать чат", color = Color.White, fontWeight = FontWeight.Bold)
+                         Text("Вставь ссылку-приглашение от друга. Если в ссылке есть адрес устройства, вводить его не нужно.", color = Pal.muted, fontSize = 11.sp)
+                         OutlinedTextField(peerEndpoint, { peerEndpoint = it }, label = { Text("Адрес устройства друга (если нет в ссылке)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+--- a/app/src/main/java/app/lunex/LocalNodeTransport.kt
++++ b/app/src/main/java/app/lunex/LocalNodeTransport.kt
+@@ -68,6 +68,7 @@
+     private var port = 0
+     private val serviceType = "_lunexnode._tcp."
+     @Volatile private var profileName: String = ""
++    @Volatile private var profileUsername: String = ""
+     private val contactRequestTimes = ConcurrentHashMap<String, Long>()
+     private val connectivity = app.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+     @Volatile private var lastNetwork: Network? = null
+@@ -267,7 +268,7 @@
+                         if (key.isNotBlank()) {
+                             val endpointsJson = profile.optJSONArray("endpoints")
+                             val endpoints = if (endpointsJson == null) listOf(endpointOf(peer)) else
+-                                (0 until minOf(endpointsJson.length(), 4)).map { endpointsJson.optString(it) }.filter { it.isNotBlank() }
++                                (listOf(endpointOf(peer)) + (0 until minOf(endpointsJson.length(), 4)).map { endpointsJson.optString(it) }.filter { it.isNotBlank() }).distinct().take(4)
+                             found[peerId] = ContactCard(peerId, name, key, endpoints, username)
+                         }
+                     }
