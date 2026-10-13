@@ -4,7 +4,7 @@ import { Server } from 'socket.io';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes, scrypt as scryptCb, timingSafeEqual, createHash, createHmac } from 'node:crypto';
+import { randomBytes, scrypt as scryptCb, timingSafeEqual, createHash, createHmac, createPublicKey, verify as verifySignature } from 'node:crypto';
 import { promisify } from 'node:util';
 import { createRateLimiter, isAllowedOrigin, isValidChannelId, parseAllowedOrigins } from './security.js';
 
@@ -16,7 +16,7 @@ const allowedOrigins = parseAllowedOrigins(process.env.LUNEX_ALLOWED_ORIGINS || 
 const io = new Server(server, {
   cors: { origin: [...allowedOrigins], credentials: false },
   allowRequest: (req, callback) => callback(null, isAllowedOrigin(req.headers.origin, allowedOrigins)),
-  maxHttpBufferSize: 16 * 1024, perMessageDeflate: false, pingInterval: 25000, pingTimeout: 20000
+  maxHttpBufferSize: 64 * 1024, perMessageDeflate: false, pingInterval: 25000, pingTimeout: 20000
 });
 const PORT = Number(process.env.PORT || 3001);
 const MAX_MESSAGE_LENGTH = 4000;
@@ -107,6 +107,101 @@ function allowAuthAttempt(req) {
   return authLimiters.get(key)();
 }
 const restMessageLimiters = new Map();
+
+const nodeRelayChallenges = new Map();
+const nodeRelaySessions = new Map();
+const nodeRelayAttemptLimiters = new Map();
+const nodeRelayMailboxes = new Map();
+let nodeRelayBufferedPackets = 0;
+const NODE_RELAY_MAILBOX_TTL_MS = 24 * 60 * 60_000;
+const NODE_RELAY_MAILBOX_PER_ROOM = 50;
+const NODE_RELAY_MAILBOX_TOTAL = 1000;
+const NODE_RELAY_CHALLENGE_TTL_MS = 2 * 60_000;
+const NODE_RELAY_SESSION_TTL_MS = 24 * 60 * 60_000;
+function allowNodeRelayAttempt(req) {
+  const key = String(req.socket.remoteAddress || req.ip || 'unknown');
+  if (!nodeRelayAttemptLimiters.has(key)) nodeRelayAttemptLimiters.set(key, createRateLimiter({ limit: 10, windowMs: 60_000 }));
+  if (nodeRelayAttemptLimiters.size > 5000) nodeRelayAttemptLimiters.delete(nodeRelayAttemptLimiters.keys().next().value);
+  return nodeRelayAttemptLimiters.get(key)();
+}
+function pruneNodeRelayState() {
+  const now = Date.now();
+  for (const [id, entry] of nodeRelayChallenges) if (entry.expiresAt <= now) nodeRelayChallenges.delete(id);
+  for (const [hash, entry] of nodeRelaySessions) if (entry.expiresAt <= now) nodeRelaySessions.delete(hash);
+  if (nodeRelayChallenges.size > 10000) nodeRelayChallenges.clear();
+}
+function parseNodeRelayPublicKey(encoded) {
+  if (typeof encoded !== 'string' || encoded.length < 80 || encoded.length > 512 || !/^[A-Za-z0-9_-]+$/.test(encoded)) return null;
+  try {
+    const der = Buffer.from(encoded, 'base64url');
+    if (der.length < 64 || der.length > 384) return null;
+    const key = createPublicKey({ key: der, format: 'der', type: 'spki' });
+    const curve = key.asymmetricKeyDetails?.namedCurve;
+    if (key.asymmetricKeyType !== 'ec' || !['prime256v1', 'secp256r1'].includes(curve)) return null;
+    return key;
+  } catch { return null; }
+}
+function pruneNodeRelayMailboxes() {
+  const now = Date.now();
+  for (const [hash, queue] of nodeRelayMailboxes) {
+    const retained = queue.filter(item => item.expiresAt > now);
+    nodeRelayBufferedPackets -= queue.length - retained.length;
+    if (retained.length) nodeRelayMailboxes.set(hash, retained); else nodeRelayMailboxes.delete(hash);
+  }
+  while (nodeRelayBufferedPackets > NODE_RELAY_MAILBOX_TOTAL) {
+    let oldestHash = '';
+    let oldestAt = Infinity;
+    for (const [hash, queue] of nodeRelayMailboxes) {
+      if (queue[0]?.createdAt < oldestAt) { oldestAt = queue[0].createdAt; oldestHash = hash; }
+    }
+    if (!oldestHash) { nodeRelayBufferedPackets = 0; nodeRelayMailboxes.clear(); break; }
+    const queue = nodeRelayMailboxes.get(oldestHash);
+    queue.shift(); nodeRelayBufferedPackets--;
+    if (!queue.length) nodeRelayMailboxes.delete(oldestHash);
+  }
+}
+function bufferOpaqueRelayFrame(tokenHashValue, envelope) {
+  pruneNodeRelayMailboxes();
+  let queue = nodeRelayMailboxes.get(tokenHashValue);
+  if (!queue) { queue = []; nodeRelayMailboxes.set(tokenHashValue, queue); }
+  queue.push({ envelope, createdAt: Date.now(), expiresAt: Date.now() + NODE_RELAY_MAILBOX_TTL_MS });
+  nodeRelayBufferedPackets++;
+  while (queue.length > NODE_RELAY_MAILBOX_PER_ROOM) { queue.shift(); nodeRelayBufferedPackets--; }
+  pruneNodeRelayMailboxes();
+}
+app.post('/api/node-relay/challenge', (req, res) => {
+  if (!allowNodeRelayAttempt(req)) return res.status(429).json({ error: 'Слишком много попыток авторизации узла.' });
+  pruneNodeRelayState();
+  if (nodeRelayChallenges.size >= 10000) return res.status(503).json({ error: 'Сервис авторизации узлов временно перегружен.' });
+  const key = parseNodeRelayPublicKey(String(req.body?.publicKey || ''));
+  if (!key) return res.status(400).json({ error: 'Некорректный ключ узла. Требуется EC P-256.' });
+  const challengeId = randomBytes(16).toString('hex');
+  const challenge = randomBytes(32).toString('base64url');
+  const canonicalPublicKey = key.export({ format: 'der', type: 'spki' }).toString('base64url');
+  nodeRelayChallenges.set(challengeId, { challenge, key, publicKey: canonicalPublicKey, expiresAt: Date.now() + NODE_RELAY_CHALLENGE_TTL_MS });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ challengeId, challenge, expiresAt: Date.now() + NODE_RELAY_CHALLENGE_TTL_MS });
+});
+app.post('/api/node-relay/authorize', (req, res) => {
+  if (!allowNodeRelayAttempt(req)) return res.status(429).json({ error: 'Слишком много попыток авторизации узла.' });
+  pruneNodeRelayState();
+  const challengeId = String(req.body?.challengeId || '');
+  const entry = nodeRelayChallenges.get(challengeId);
+  if (entry) nodeRelayChallenges.delete(challengeId);
+  if (!entry || entry.expiresAt <= Date.now()) return res.status(401).json({ error: 'Challenge отсутствует или истёк.' });
+  const signatureText = String(req.body?.signature || '');
+  if (signatureText.length < 80 || signatureText.length > 256 || !/^[A-Za-z0-9_-]+$/.test(signatureText))
+    return res.status(401).json({ error: 'Некорректная подпись узла.' });
+  let valid = false;
+  try { valid = verifySignature('sha256', Buffer.from(entry.challenge, 'utf8'), entry.key, Buffer.from(signatureText, 'base64url')); } catch {}
+  if (!valid) return res.status(401).json({ error: 'Подпись узла не прошла проверку.' });
+  if (nodeRelaySessions.size >= 20000) return res.status(503).json({ error: 'Сервис relay-сессий временно перегружен.' });
+  const token = randomBytes(32).toString('base64url');
+  const expiresAt = Date.now() + NODE_RELAY_SESSION_TTL_MS;
+  nodeRelaySessions.set(tokenHash(token), { publicKeyHash: tokenHash(entry.publicKey), expiresAt });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ token, expiresAt });
+});
 function allowRestMessage(userId) {
   if (!restMessageLimiters.has(userId)) restMessageLimiters.set(userId, createRateLimiter({ limit: 60, windowMs: 60_000 }));
   if (restMessageLimiters.size > 5000) restMessageLimiters.delete(restMessageLimiters.keys().next().value);
@@ -552,12 +647,29 @@ if (fs.existsSync(path.resolve(__dirname, '../dist'))) {
 }
 io.use((socket, next) => {
   const auth = getSession(socket.handshake.auth?.token);
-  if (!auth) return next(new Error('unauthorized'));
-  socket.data.user = auth.user;
-  socket.data.sessionTokenHash = auth.session.tokenHash;
-  next();
+  if (auth) {
+    socket.data.user = auth.user;
+    socket.data.sessionTokenHash = auth.session.tokenHash;
+    socket.data.nodeRelayAuthorized = false;
+    return next();
+  }
+  const nodeToken = socket.handshake.auth?.nodeToken;
+  if (typeof nodeToken === 'string' && nodeToken.length <= 128) {
+    const hash = tokenHash(nodeToken);
+    const relaySession = nodeRelaySessions.get(hash);
+    if (relaySession && relaySession.expiresAt > Date.now()) {
+      socket.data.nodeRelayAuthorized = true;
+      socket.data.nodeRelaySessionHash = hash;
+      return next();
+    }
+  }
+  return next(new Error('unauthorized'));
 });
 function socketSessionIsValid(socket) {
+  if (socket.data.nodeRelayAuthorized) {
+    const relaySession = nodeRelaySessions.get(socket.data.nodeRelaySessionHash);
+    return !!relaySession && relaySession.expiresAt > Date.now();
+  }
   return db.sessions.some(s => s.tokenHash === socket.data.sessionTokenHash && s.expiresAt > Date.now());
 }
 const activeCalls = new Map();
@@ -571,32 +683,38 @@ function callForUser(callId, userId) {
 }
 
 io.on('connection', socket => {
-  socket.join(`user:${socket.data.user.id}`);
+  if (socket.data.user?.id) socket.join(`user:${socket.data.user.id}`);
   // Opaque relay for phone-hosted Lunex nodes. The relay only forwards AES-GCM
   // envelopes keyed by the hash of a shared room invite secret; it never needs
   // the invite secret or plaintext message.
   const nodeRelayLimit = createRateLimiter({ limit: 90, windowMs: 60_000 });
   socket.on('node:join', payload => {
     if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    if (!socket.data.nodeRelayAuthorized) { socket.emit('node:error', { error: 'Для relay требуется авторизация ключом устройства.' }); return; }
     for (const room of socket.rooms) {
       if (room.startsWith('node-room:')) socket.leave(room);
     }
     const hashes = Array.isArray(payload?.tokenHashes) ? payload.tokenHashes.slice(0, 128) : [];
+    pruneNodeRelayMailboxes();
     for (const hash of hashes) {
-      if (typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash)) socket.join(`node-room:${hash}`);
+      if (typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) continue;
+      socket.join(`node-room:${hash}`);
+      for (const item of nodeRelayMailboxes.get(hash) || []) socket.emit('node:message', { tokenHash: hash, envelope: item.envelope });
     }
   });
   socket.on('node:message', payload => {
     if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    if (!socket.data.nodeRelayAuthorized) { socket.emit('node:error', { error: 'Для relay требуется авторизация ключом устройства.' }); return; }
     if (!nodeRelayLimit()) { socket.emit('node:error', { error: 'Слишком много relay-пакетов.' }); return; }
     const tokenHash = typeof payload?.tokenHash === 'string' ? payload.tokenHash : '';
     const envelope = payload?.envelope;
     if (!/^[a-f0-9]{64}$/.test(tokenHash) || !envelope || typeof envelope !== 'object' ||
         envelope.encrypted !== true || envelope.keyId !== tokenHash ||
         typeof envelope.nonce !== 'string' || typeof envelope.ciphertext !== 'string' ||
-        envelope.nonce.length > 32 || envelope.ciphertext.length > 12_000 ||
-        JSON.stringify(envelope).length > 12_500) return;
-    // Only sockets subscribed to this invitation-secret hash receive the opaque frame.
+        envelope.nonce.length > 32 || envelope.ciphertext.length > 60_000 ||
+        JSON.stringify(envelope).length > 62_000) return;
+    if (!socket.rooms.has(`node-room:${tokenHash}`)) { socket.emit('node:error', { error: 'Сначала подпишись на комнату relay.' }); return; }
+    bufferOpaqueRelayFrame(tokenHash, envelope);
     socket.to(`node-room:${tokenHash}`).emit('node:message', { tokenHash, envelope });
   });
   socket.on('call:invite', payload => {
