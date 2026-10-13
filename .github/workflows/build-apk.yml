@@ -8,6 +8,7 @@ on:
     branches: [ '**' ]
     paths:
       - 'app/**'
+      - 'ci/stage4-source/**'
       - 'Lunex-MVP/**'
       - '*.gradle.kts'
       - 'gradle.properties'
@@ -56,7 +57,8 @@ jobs:
       - name: Package exact source snapshot (including Stage 4 overlay)
         if: always()
         run: |
-          tar --exclude='./.git' --exclude='./app/build' --exclude='./Lunex-MVP/node_modules' --exclude='./Lunex-MVP/.env' \
+          tar --exclude='./.git' --exclude='./.gradle' --exclude='./.kotlin' --exclude='./build' \
+            --exclude='./app/build' --exclude='./Lunex-MVP/node_modules' --exclude='./Lunex-MVP/.env' \
             -czf /tmp/Lunex-Stage4-Source.tar.gz -C . .
       - uses: actions/upload-artifact@v4
         with:
