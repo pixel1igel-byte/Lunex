@@ -22,6 +22,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Apply the exact Stage 4 Android source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat ci/stage4-source/chunk*.b64 | base64 --decode > /tmp/lunex-stage4-sources.tar.xz
+          xz -dc /tmp/lunex-stage4-sources.tar.xz | tar -xf - -C .
+          rm -f app/src/main/java/app/lunex/OutboxSyncWorker.kt
+          test -f app/src/main/java/app/lunex/NodeIdentity.kt
+          test -f app/src/main/java/app/lunex/NodeBackground.kt
+          test -f app/src/main/java/app/lunex/Theme.kt
       - name: Test backend and background delivery
         working-directory: Lunex-MVP
         run: |
@@ -41,14 +51,16 @@ jobs:
           name: Lunex-Android-APK
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
-      - name: Package exact GitHub source snapshot
+      - name: Package exact source snapshot (including Stage 4 overlay)
         if: always()
-        run: git archive --format=tar.gz --prefix=Lunex/ HEAD -o /tmp/Lunex-GitHub-Source.tar.gz
+        run: |
+          tar --exclude='./.git' --exclude='./app/build' --exclude='./Lunex-MVP/node_modules' --exclude='./Lunex-MVP/.env' \
+            -czf /tmp/Lunex-Stage4-Source.tar.gz -C . .
       - uses: actions/upload-artifact@v4
         with:
-          name: Lunex-GitHub-Source
-          path: /tmp/Lunex-GitHub-Source.tar.gz
+          name: Lunex-Stage4-Source
+          path: /tmp/Lunex-Stage4-Source.tar.gz
           if-no-files-found: error
           retention-days: 7
