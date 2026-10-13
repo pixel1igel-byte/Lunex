@@ -116,6 +116,7 @@ let nodeRelayBufferedPackets = 0;
 const NODE_RELAY_MAILBOX_TTL_MS = 24 * 60 * 60_000;
 const NODE_RELAY_MAILBOX_PER_ROOM = 50;
 const NODE_RELAY_MAILBOX_TOTAL = 1000;
+const NODE_RELAY_REPLAY_PER_SOCKET = 200;
 const NODE_RELAY_CHALLENGE_TTL_MS = 2 * 60_000;
 const NODE_RELAY_SESSION_TTL_MS = 24 * 60 * 60_000;
 function allowNodeRelayAttempt(req) {
@@ -687,7 +688,7 @@ io.on('connection', socket => {
   // Opaque relay for phone-hosted Lunex nodes. The relay only forwards AES-GCM
   // envelopes keyed by the hash of a shared room invite secret; it never needs
   // the invite secret or plaintext message.
-  const nodeRelayLimit = createRateLimiter({ limit: 90, windowMs: 60_000 });
+  const nodeRelayLimit = createRateLimiter({ limit: 360, windowMs: 60_000 });
   socket.on('node:join', payload => {
     if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
     if (!socket.data.nodeRelayAuthorized) { socket.emit('node:error', { error: 'Для relay требуется авторизация ключом устройства.' }); return; }
@@ -696,10 +697,16 @@ io.on('connection', socket => {
     }
     const hashes = Array.isArray(payload?.tokenHashes) ? payload.tokenHashes.slice(0, 128) : [];
     pruneNodeRelayMailboxes();
+    let replayed = 0;
     for (const hash of hashes) {
       if (typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) continue;
       socket.join(`node-room:${hash}`);
-      for (const item of nodeRelayMailboxes.get(hash) || []) socket.emit('node:message', { tokenHash: hash, envelope: item.envelope });
+      for (const item of nodeRelayMailboxes.get(hash) || []) {
+        if (replayed >= NODE_RELAY_REPLAY_PER_SOCKET) break;
+        socket.emit('node:message', { tokenHash: hash, envelope: item.envelope });
+        replayed++;
+      }
+      if (replayed >= NODE_RELAY_REPLAY_PER_SOCKET) break;
     }
   });
   socket.on('node:message', payload => {
@@ -711,8 +718,8 @@ io.on('connection', socket => {
     if (!/^[a-f0-9]{64}$/.test(tokenHash) || !envelope || typeof envelope !== 'object' ||
         envelope.encrypted !== true || envelope.keyId !== tokenHash ||
         typeof envelope.nonce !== 'string' || typeof envelope.ciphertext !== 'string' ||
-        envelope.nonce.length > 32 || envelope.ciphertext.length > 60_000 ||
-        JSON.stringify(envelope).length > 62_000) return;
+        envelope.nonce.length > 32 || envelope.ciphertext.length > 24_000 ||
+        JSON.stringify(envelope).length > 25_000) return;
     if (!socket.rooms.has(`node-room:${tokenHash}`)) { socket.emit('node:error', { error: 'Сначала подпишись на комнату relay.' }); return; }
     bufferOpaqueRelayFrame(tokenHash, envelope);
     socket.to(`node-room:${tokenHash}`).emit('node:message', { tokenHash, envelope });
