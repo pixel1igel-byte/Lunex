@@ -9,6 +9,7 @@ on:
     paths:
       - 'app/**'
       - 'ci/stage4-source/**'
+      - 'ci/stage4-patches/**'
       - 'Lunex-MVP/**'
       - '*.gradle.kts'
       - 'gradle.properties'
@@ -33,6 +34,11 @@ jobs:
           test -f app/src/main/java/app/lunex/NodeIdentity.kt
           test -f app/src/main/java/app/lunex/NodeBackground.kt
           test -f app/src/main/java/app/lunex/Theme.kt
+          # Apply the reviewed Stage 4 feature patch after extracting the immutable source snapshot.
+          base64 --decode ci/stage4-patches/profile-search.patch.gz.b64 | gzip -dc > /tmp/lunex-stage4.patch
+          patch --batch --forward -p1 < /tmp/lunex-stage4.patch
+          grep -q 'fun searchUsers(queryRaw: String' app/src/main/java/app/lunex/LocalNodeTransport.kt
+          grep -q 'Сохранить профиль' app/src/main/java/app/lunex/Theme.kt
       - name: Test backend and background delivery
         working-directory: Lunex-MVP
         run: |
