@@ -15,8 +15,10 @@ on:
       - 'gradle.properties'
       - '.github/workflows/build-apk.yml'
 concurrency:
-  group: lunex-apk-${{ github.ref }}
-  cancel-in-progress: true
+  # A cancelled GitHub-hosted job can remain in post-checkout cleanup; isolate each
+  # commit so the next verified build is not blocked behind stale cleanup state.
+  group: lunex-apk-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
 permissions:
   contents: read
 jobs:
