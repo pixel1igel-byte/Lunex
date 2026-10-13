@@ -673,6 +673,9 @@ function socketSessionIsValid(socket) {
   }
   return db.sessions.some(s => s.tokenHash === socket.data.sessionTokenHash && s.expiresAt > Date.now());
 }
+function cloudSocketSessionIsValid(socket) {
+  return !socket.data.nodeRelayAuthorized && !!socket.data.user?.id && socketSessionIsValid(socket);
+}
 const activeCalls = new Map();
 function callPayloadIsValid(payload) {
   return payload && typeof payload.callId === 'string' && payload.callId.length <= 80 &&
@@ -725,7 +728,7 @@ io.on('connection', socket => {
     socket.to(`node-room:${tokenHash}`).emit('node:message', { tokenHash, envelope });
   });
   socket.on('call:invite', payload => {
-    if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    if (!cloudSocketSessionIsValid(socket)) { if (!socketSessionIsValid(socket)) socket.disconnect(true); return; }
     if (!callPayloadIsValid(payload) || !['audio', 'video'].includes(payload.mode)) return;
     const conversation = db.dms.find(d => d.id === payload.conversationId && d.userIds.includes(socket.data.user.id));
     const targetId = String(payload.toUserId || '');
@@ -736,20 +739,20 @@ io.on('connection', socket => {
     io.to(`user:${targetId}`).emit('call:incoming', { callId: call.callId, conversationId: call.conversationId, caller: publicUser(socket.data.user), mode: call.mode, offer: payload.offer });
   });
   socket.on('call:accept', payload => {
-    if (!socketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
+    if (!cloudSocketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
     const call = callForUser(payload.callId, socket.data.user.id);
     if (!call || call.conversationId !== payload.conversationId || call.callerId === socket.data.user.id) return;
     io.to(`user:${call.callerId}`).emit('call:accepted', { callId: call.callId, conversationId: call.conversationId, answer: payload.answer });
   });
   socket.on('call:signal', payload => {
-    if (!socketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
+    if (!cloudSocketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
     const call = callForUser(payload.callId, socket.data.user.id);
     if (!call || call.conversationId !== payload.conversationId || !payload.signal || typeof payload.signal !== 'object') return;
     const targetId = call.userIds.find(id => id !== socket.data.user.id);
     io.to(`user:${targetId}`).emit('call:signal', { callId: call.callId, conversationId: call.conversationId, signal: payload.signal });
   });
   socket.on('call:reject', payload => {
-    if (!socketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
+    if (!cloudSocketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
     const call = callForUser(payload.callId, socket.data.user.id);
     if (!call || call.conversationId !== payload.conversationId) return;
     const targetId = call.userIds.find(id => id !== socket.data.user.id);
@@ -757,7 +760,7 @@ io.on('connection', socket => {
     io.to(`user:${targetId}`).emit('call:rejected', { callId: call.callId, conversationId: call.conversationId });
   });
   socket.on('call:end', payload => {
-    if (!socketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
+    if (!cloudSocketSessionIsValid(socket) || !callPayloadIsValid(payload)) return;
     const call = callForUser(payload.callId, socket.data.user.id);
     if (!call || call.conversationId !== payload.conversationId) return;
     const targetId = call.userIds.find(id => id !== socket.data.user.id);
@@ -765,6 +768,7 @@ io.on('connection', socket => {
     io.to(`user:${targetId}`).emit('call:ended', { callId: call.callId, conversationId: call.conversationId });
   });
   socket.on('disconnect', () => {
+    if (!socket.data.user?.id) return;
     for (const [callId, call] of activeCalls) {
       if (!call.userIds.includes(socket.data.user.id)) continue;
       activeCalls.delete(callId);
@@ -775,7 +779,7 @@ io.on('connection', socket => {
   const messageBurst = createRateLimiter({ limit: 20, windowMs: 10_000 });
   const messageSustained = createRateLimiter({ limit: 120, windowMs: 60_000 });
   socket.on('channel:join', channelId => {
-    if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    if (!cloudSocketSessionIsValid(socket)) { if (!socketSessionIsValid(socket)) socket.disconnect(true); return; }
     const community = db.communities.find(item => (item.channels || []).some(channel => channel.id === channelId));
     const channel = community?.channels.find(item => item.id === channelId);
     if (!community || !channel || !hasPermission(community, socket.data.user.id, 'view', channel)) return;
@@ -783,7 +787,7 @@ io.on('connection', socket => {
     socket.join(channelId);
   });
   socket.on('dm:join', conversationId => {
-    if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    if (!cloudSocketSessionIsValid(socket)) { if (!socketSessionIsValid(socket)) socket.disconnect(true); return; }
     if (typeof conversationId !== 'string' || conversationId.length > 64) return;
     const conversation = db.dms.find(d => d.id === conversationId && d.userIds.includes(socket.data.user.id));
     if (!conversation) return;
@@ -791,7 +795,7 @@ io.on('connection', socket => {
     socket.join(`dm:${conversation.id}`);
   });
   socket.on('dm:send', payload => {
-    if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    if (!cloudSocketSessionIsValid(socket)) { if (!socketSessionIsValid(socket)) socket.disconnect(true); return; }
     if (!messageBurst() || !messageSustained()) { socket.emit('message:error', { error: 'Слишком много сообщений. Подождите немного.' }); return; }
     const conversationId = String(payload?.conversationId || '').slice(0, 64);
     const text = typeof payload?.text === 'string' ? payload.text.trim().slice(0, MAX_MESSAGE_LENGTH) : '';
@@ -809,7 +813,7 @@ io.on('connection', socket => {
     if (clientMessageId) socket.emit('message:ack', { clientMessageId, message });
   });
   socket.on('message:send', payload => {
-    if (!socketSessionIsValid(socket)) { socket.disconnect(true); return; }
+    if (!cloudSocketSessionIsValid(socket)) { if (!socketSessionIsValid(socket)) socket.disconnect(true); return; }
     if (!messageBurst() || !messageSustained()) { socket.emit('message:error', { error: 'Слишком много сообщений. Подождите немного.' }); return; }
     const channelId = String(payload?.channelId || '').slice(0, 120);
     const text = typeof payload?.text === 'string' ? payload.text.trim().slice(0, MAX_MESSAGE_LENGTH) : '';
